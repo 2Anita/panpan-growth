@@ -1,0 +1,21 @@
+{
+  "name": "盘盘成长 - 个人成长复盘",
+  "short_name": "盘盘成长",
+  "description": "极低摩擦的个人成长复盘工具，语音/文字/图片输入，AI自动分类总结，生成周/月成长报告",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FAFAFA",
+  "theme_color": "#6366F1",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
