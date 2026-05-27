@@ -5,9 +5,9 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { useAuth } from '@/components/AuthProvider';
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
+import { supabase } from '@/lib/supabase/client';
 
 export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
@@ -15,25 +15,26 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [mode, setMode] = useState<'choice' | 'login' | 'signup'>('choice');
   const router = useRouter();
-  const { signInAnon, signInAnon: anonSignIn } = useAuth();
 
-  const handleAnonymousLogin = async () => {
+  const handleLogin = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'anonymous' }),
-      });
-
-      const data = await response.json();
-      if (data.error) {
-        toast.error(data.error);
-      } else {
-        toast.success('登录成功');
-        router.push('/');
+      if (!supabase) {
+        toast.error('系统未配置，请联系管理员');
+        return;
       }
+
+      const { data, error } = await supabase.auth.signInAnonymously();
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      toast.success('登录成功');
+      router.push('/');
+      router.refresh();
     } catch (error) {
+      console.error('Login error:', error);
       toast.error('登录失败，请重试');
     } finally {
       setIsLoading(false);
@@ -45,20 +46,22 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'login', email, password }),
-      });
-
-      const data = await response.json();
-      if (data.error) {
-        toast.error(data.error);
-      } else {
-        toast.success('登录成功');
-        router.push('/');
+      if (!supabase) {
+        toast.error('系统未配置，请联系管理员');
+        return;
       }
+
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      toast.success('登录成功');
+      router.push('/');
+      router.refresh();
     } catch (error) {
+      console.error('Login error:', error);
       toast.error('登录失败，请重试');
     } finally {
       setIsLoading(false);
@@ -70,20 +73,21 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'signup', email, password }),
-      });
-
-      const data = await response.json();
-      if (data.error) {
-        toast.error(data.error);
-      } else {
-        toast.success('注册成功，请查收验证邮件');
-        setMode('login');
+      if (!supabase) {
+        toast.error('系统未配置，请联系管理员');
+        return;
       }
+
+      const { error } = await supabase.auth.signUp({ email, password });
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      toast.success('注册成功，请查收验证邮件');
+      setMode('login');
     } catch (error) {
+      console.error('Signup error:', error);
       toast.error('注册失败，请重试');
     } finally {
       setIsLoading(false);
@@ -206,14 +210,14 @@ export default function LoginPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <Button
-            onClick={handleAnonymousLogin}
+            onClick={handleLogin}
             disabled={isLoading}
             className="w-full bg-indigo-500 hover:bg-indigo-600"
           >
             {isLoading ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
-              '匿名登录（无需注册）'
+              '登录'
             )}
           </Button>
           <div className="relative">

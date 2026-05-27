@@ -1,7 +1,8 @@
 'use client';
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { supabase, signInAnonymously, signOut, getCurrentUser } from '@/lib/supabase/client';
+import { useRouter } from 'next/navigation';
+import { supabase } from '@/lib/supabase/client';
 
 interface User {
   id: string;
@@ -23,40 +24,72 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const router = useRouter();
 
   useEffect(() => {
     // Check current user on mount
-    const checkUser = async () => {
+    const initAuth = async () => {
       try {
-        const currentUser = await getCurrentUser();
-        setUser(currentUser);
+        if (!supabase) {
+          setLoading(false);
+          return;
+        }
+
+        // Get initial session
+        const { data: { session } } = await supabase.auth.getSession();
+        setUser(session?.user?.id ? {
+          id: session.user.id,
+          email: session.user.email,
+          role: session.user.role,
+          aud: session.user.aud,
+        } : null);
+
+        // Listen for auth changes
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+          setUser(session?.user?.id ? {
+            id: session.user.id,
+            email: session.user.email,
+            role: session.user.role,
+            aud: session.user.aud,
+          } : null);
+
+          // If user just logged in, redirect to home
+          if (session?.user) {
+            router.refresh();
+          }
+        });
+
+        setLoading(false);
+        return () => subscription.unsubscribe();
       } catch (error) {
-        console.error('Error checking user:', error);
-      } finally {
+        console.error('Auth init error:', error);
         setLoading(false);
       }
     };
 
-    checkUser();
-
-    // Listen for auth changes
-    if (supabase) {
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        setUser(session?.user || null);
-      });
-
-      return () => subscription.unsubscribe();
-    }
-  }, []);
+    initAuth();
+  }, [router]);
 
   const signInAnon = async () => {
+    if (!supabase) {
+      console.error('Supabase not configured');
+      throw new Error('Supabase not configured');
+    }
+
     try {
-      const { user: newUser, error } = await signInAnonymously();
+      const { data, error } = await supabase.auth.signInAnonymously();
       if (error) {
         console.error('Anonymous sign in error:', error);
         throw error;
       }
-      setUser(newUser);
+      if (data.user) {
+        setUser({
+          id: data.user.id,
+          email: data.user.email,
+          role: data.user.role,
+          aud: data.user.aud,
+        });
+      }
     } catch (error) {
       console.error('Sign in error:', error);
       throw error;
@@ -64,8 +97,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOutUser = async () => {
+    if (!supabase) return;
+
     try {
-      await signOut();
+      await supabase.auth.signOut();
       setUser(null);
     } catch (error) {
       console.error('Sign out error:', error);

@@ -15,7 +15,7 @@ export function HomePageContent() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [pendingText, setPendingText] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const { user, signInAnon, isAuthenticated, loading } = useAuth();
+  const { user, isAuthenticated, loading } = useAuth();
 
   const today = new Date();
   const greeting = getGreeting();
@@ -105,10 +105,10 @@ export function HomePageContent() {
               请先登录后再使用
             </p>
             <button
-              onClick={signInAnon}
+              onClick={() => window.location.href = '/login'}
               className="px-6 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600"
             >
-              匿名登录
+              登录
             </button>
           </CardContent>
         </Card>
