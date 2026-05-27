@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 import { DEFAULT_CATEGORIES } from '@/types';
-
-// In-memory stores for local/demo mode
-const inMemoryRecords: any[] = [];
-const inMemoryBlocks: any[] = [];
 
 // Valid categories mapping - strict mapping
 const VALID_CATEGORIES: Record<string, string> = {
@@ -20,6 +17,65 @@ function normalizeCategory(cat: string): string {
   return VALID_CATEGORIES[cat] || '其他';
 }
 
+// Create Supabase clients
+function createSupabaseClient(supabaseUrl: string, supabaseKey: string) {
+  return createClient(supabaseUrl, supabaseKey, {
+    auth: { autoRefreshToken: false, persistSession: false }
+  });
+}
+
+// Get Supabase admin client (service role key bypasses RLS)
+function getSupabaseAdmin() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !supabaseServiceKey) return null;
+  return createSupabaseClient(supabaseUrl, supabaseServiceKey);
+}
+
+// Get Supabase anon client
+function getSupabaseAnon() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseAnonKey) return null;
+  return createSupabaseClient(supabaseUrl, supabaseAnonKey);
+}
+
+// Get user from request
+async function getUser(request: NextRequest) {
+  const supabaseAdmin = getSupabaseAdmin();
+  if (!supabaseAdmin) return null;
+
+  // Try to get token from Authorization header (Bearer token)
+  const authHeader = request.headers.get('Authorization');
+  if (authHeader) {
+    const token = authHeader.replace('Bearer ', '');
+    const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+    if (!error && user) return user;
+  }
+
+  // Try to get token from cookie (Supabase session cookie)
+  const cookieHeader = request.headers.get('cookie');
+  if (cookieHeader) {
+    const cookies = Object.fromEntries(
+      cookieHeader.split('; ').map(c => {
+        const [key, ...val] = c.split('=');
+        return [key, val.join('=')];
+      })
+    );
+    const supabaseToken = cookies['sb-access-token'] || cookies['supabase-auth-token'];
+    if (supabaseToken) {
+      const { data: { user }, error } = await supabaseAdmin.auth.getUser(supabaseToken);
+      if (!error && user) return user;
+    }
+  }
+
+  return null;
+}
+
+// In-memory stores for local/demo mode
+const inMemoryRecords: any[] = [];
+const inMemoryBlocks: any[] = [];
+
 export async function POST(request: NextRequest) {
   try {
     const { content, content_type = 'text', preferredCategory } = await request.json();
@@ -28,7 +84,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Content is required' }, { status: 400 });
     }
 
-    const userId = 'local-user'; // Default for non-logged in users
+    const user = await getUser(request);
+    const userId = user?.id || 'anonymous';
     const now = new Date().toISOString();
 
     // Build category list for AI
@@ -180,7 +237,53 @@ ${categoryList}
       })),
     };
 
-    // Store in memory
+    // Try to save to Supabase
+    const supabaseAdmin = getSupabaseAdmin();
+    if (supabaseAdmin) {
+      try {
+        // Save to records table
+        const { error: recordError } = await supabaseAdmin
+          .from('records')
+          .insert({
+            id: record.id,
+            user_id: record.user_id,
+            content: record.content,
+            content_type: record.content_type,
+            summary: record.summary,
+            categories: record.categories,
+            is_favorite: false,
+          });
+
+        if (recordError) {
+          console.error('Failed to save record to Supabase:', recordError);
+        } else {
+          // Save blocks to content_blocks table (NOT blocks!)
+          for (const block of record.blocks) {
+            const { error: blockError } = await supabaseAdmin
+              .from('content_blocks')
+              .insert({
+                id: block.id,
+                user_id: block.user_id,
+                entry_id: block.entry_id,
+                category: block.category,
+                content: block.content,
+                keywords: block.keywords,
+                favorite_keywords: [],
+                is_manual: false,
+                is_favorite: false,
+              });
+
+            if (blockError) {
+              console.error('Failed to save block to Supabase:', blockError);
+            }
+          }
+        }
+      } catch (dbError) {
+        console.error('Database error:', dbError);
+      }
+    }
+
+    // Always also store in memory for local access
     inMemoryRecords.unshift(record);
     record.blocks.forEach((block: any) => inMemoryBlocks.unshift(block));
 
@@ -194,12 +297,66 @@ ${categoryList}
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
-    const limit = parseInt(searchParams.get('limit') || '20');
+    const limit = parseInt(searchParams.get('limit') || '50');
     const category = searchParams.get('category');
     const searchQuery = searchParams.get('q');
     const blocksOnly = searchParams.get('blocks_only') === 'true';
     const timeFilter = searchParams.get('time');
 
+    const user = await getUser(request);
+    const isLoggedIn = !!user;
+
+    // Try Supabase first if logged in
+    if (isLoggedIn) {
+      const supabaseAdmin = getSupabaseAdmin();
+      if (supabaseAdmin) {
+        try {
+          let query = supabaseAdmin
+            .from('content_blocks')
+            .select('*, records(content)')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false })
+            .limit(limit);
+
+          if (category) {
+            query = query.eq('category', category);
+          }
+
+          if (timeFilter && timeFilter !== 'all') {
+            const now = new Date();
+            let startDate: Date;
+            switch (timeFilter) {
+              case 'today':
+                startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                break;
+              case 'week':
+                startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+                break;
+              case 'month':
+                startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+                break;
+              default:
+                startDate = new Date(0);
+            }
+            query = query.gte('created_at', startDate.toISOString());
+          }
+
+          if (searchQuery) {
+            query = query.or(`content.ilike.%${searchQuery}%,keywords.ilike.%${searchQuery}%`);
+          }
+
+          const { data: contentBlocks, error } = await query;
+
+          if (!error && contentBlocks) {
+            return NextResponse.json(contentBlocks);
+          }
+        } catch (error) {
+          console.error('Supabase query error:', error);
+        }
+      }
+    }
+
+    // Fallback to in-memory storage
     let filteredBlocks = [...inMemoryBlocks];
 
     // Filter by category
@@ -265,6 +422,48 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'block_id is required' }, { status: 400 });
     }
 
+    // Try Supabase first
+    const supabaseAdmin = getSupabaseAdmin();
+    if (supabaseAdmin) {
+      try {
+        if (keyword) {
+          // Keyword favorite toggle
+          const { data: block } = await supabaseAdmin
+            .from('content_blocks')
+            .select('favorite_keywords')
+            .eq('id', block_id)
+            .single();
+
+          if (block) {
+            let favoriteKeywords = block.favorite_keywords || [];
+            if (is_favorite === true && !favoriteKeywords.includes(keyword)) {
+              favoriteKeywords.push(keyword);
+            } else if (is_favorite === false) {
+              favoriteKeywords = favoriteKeywords.filter((k: string) => k !== keyword);
+            }
+
+            await supabaseAdmin
+              .from('content_blocks')
+              .update({ favorite_keywords: favoriteKeywords, updated_at: new Date().toISOString() })
+              .eq('id', block_id);
+
+            return NextResponse.json({ id: block_id, favorite_keywords: favoriteKeywords });
+          }
+        } else {
+          // Block favorite toggle
+          await supabaseAdmin
+            .from('content_blocks')
+            .update({ is_favorite, updated_at: new Date().toISOString() })
+            .eq('id', block_id);
+
+          return NextResponse.json({ id: block_id, is_favorite });
+        }
+      } catch (error) {
+        console.error('Supabase PATCH error:', error);
+      }
+    }
+
+    // Fallback to in-memory
     const blockIndex = inMemoryBlocks.findIndex(b => b.id === block_id);
     if (blockIndex === -1) {
       return NextResponse.json({ error: 'Block not found' }, { status: 404 });

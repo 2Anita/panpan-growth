@@ -8,6 +8,7 @@ import { RecordCard } from '@/components/RecordCard';
 import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
 import { DEFAULT_CATEGORIES, CATEGORY_COLORS } from '@/types';
+import { getAuthToken } from '@/lib/supabase/client';
 
 export function HomePageContent() {
   const [records, setRecords] = useState<any[]>([]);
@@ -26,7 +27,11 @@ export function HomePageContent() {
   const fetchRecords = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/records?blocks_only=true&limit=20');
+      const token = await getAuthToken();
+      const headers: HeadersInit = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const response = await fetch('/api/records?blocks_only=true&limit=20', { headers });
       if (response.ok) {
         const data = await response.json();
         // Group blocks by entry_id to create records
@@ -67,9 +72,13 @@ export function HomePageContent() {
 
     setIsSubmitting(true);
     try {
+      const token = await getAuthToken();
+      const headers: HeadersInit = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const response = await fetch('/api/records', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           content,
           content_type: 'text',

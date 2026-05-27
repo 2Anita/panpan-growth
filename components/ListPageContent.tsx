@@ -10,6 +10,7 @@ import { BottomNav } from '@/components/BottomNav';
 import { Search, X, ChevronRight, Star, Loader2 } from 'lucide-react';
 import { CATEGORY_COLORS, DEFAULT_CATEGORIES } from '@/types';
 import { formatDistanceToNow, formatDate } from '@/lib/utils';
+import { getAuthToken } from '@/lib/supabase/client';
 import {
   Dialog,
   DialogContent,
@@ -77,7 +78,14 @@ export function ListPageContent() {
         params.set('q', searchQuery.trim());
       }
 
-      const response = await fetch(`/api/records?${params.toString()}`);
+      // Get auth token for logged-in users
+      const token = await getAuthToken();
+      const headers: HeadersInit = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      const response = await fetch(`/api/records?${params.toString()}`, { headers });
       if (response.ok) {
         const data = await response.json();
         setBlocks(data);
@@ -126,9 +134,13 @@ export function ListPageContent() {
     }
 
     try {
+      const token = await getAuthToken();
+      const headers: HeadersInit = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const response = await fetch('/api/blocks', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ block_id: blockId }),
       });
 
@@ -210,9 +222,13 @@ export function ListPageContent() {
     }
 
     try {
+      const token = await getAuthToken();
+      const headers: HeadersInit = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const response = await fetch('/api/blocks', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ block_id: blockId, keyword, is_favorite: newFavoriteState }),
       });
 

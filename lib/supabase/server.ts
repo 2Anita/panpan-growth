@@ -1,31 +1,22 @@
-import { createClient as createSupabaseClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
-let supabase: ReturnType<typeof createSupabaseClient> | null = null;
+// Server-side client with service role (bypasses RLS) - for admin operations
+export const supabaseAdmin = supabaseUrl && supabaseServiceKey
+  ? createClient(supabaseUrl, supabaseServiceKey, { auth: { autoRefreshToken: false, persistSession: false } })
+  : null;
 
-function getSupabaseClient() {
-  if (!supabase && supabaseUrl && supabaseAnonKey) {
-    supabase = createSupabaseClient(supabaseUrl, supabaseAnonKey);
-  }
-  return supabase;
-}
+// Get user from request headers
+export async function getUserFromRequest(request: Request) {
+  if (!supabaseAdmin) return null;
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader) return null;
 
-export function createClient() {
-  return getSupabaseClient();
-}
-
-export async function getUser() {
-  const client = getSupabaseClient();
-  if (!client) return null;
-  const { data: { user } } = await client.auth.getUser();
+  const token = authHeader.replace('Bearer ', '');
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !user) return null;
   return user;
-}
-
-export async function signOut() {
-  const client = getSupabaseClient();
-  if (!client) return { error: null };
-  const { error } = await client.auth.signOut();
-  return { error };
 }

@@ -9,6 +9,7 @@ import { BottomNav } from '@/components/BottomNav';
 import { Search, X, Calendar, ChevronRight, Star, ArrowLeft } from 'lucide-react';
 import { ContentBlock, CATEGORY_COLORS, DEFAULT_CATEGORIES } from '@/types';
 import { formatDistanceToNow, formatDate } from '@/lib/utils';
+import { getAuthToken } from '@/lib/supabase/client';
 import { Badge } from '@/components/ui/badge';
 import {
   Dialog,
@@ -42,7 +43,11 @@ export default function FavoritesPage() {
   const fetchFavorites = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/records?limit=100');
+      const token = await getAuthToken();
+      const headers: HeadersInit = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const response = await fetch('/api/records?limit=100', { headers });
       if (response.ok) {
         const records = await response.json();
         // Filter to only favorites
@@ -77,18 +82,22 @@ export default function FavoritesPage() {
     }
   };
 
-  const handleUnfavorite = async (entryId: string) => {
+  const handleUnfavorite = async (blockId: string) => {
     try {
-      const response = await fetch('/api/records', {
+      const token = await getAuthToken();
+      const headers: HeadersInit = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const response = await fetch('/api/blocks', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recordId: entryId, is_favorite: false }),
+        headers,
+        body: JSON.stringify({ block_id: blockId, is_favorite: false }),
       });
 
       if (response.ok) {
         toast.success('已取消收藏');
         // Remove from list
-        setBlocks(prev => prev.filter(b => b.entry_id !== entryId));
+        setBlocks(prev => prev.filter(b => b.id !== blockId));
       }
     } catch (error) {
       console.error('Failed to unfavorite:', error);
@@ -175,7 +184,7 @@ export default function FavoritesPage() {
                       </span>
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => handleUnfavorite(block.entry_id)}
+                          onClick={() => handleUnfavorite(block.id)}
                           className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
                         >
                           <Star className="w-4 h-4 text-amber-500 fill-amber-500" />

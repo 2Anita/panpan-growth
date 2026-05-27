@@ -47,12 +47,9 @@ export function SettingsPageContent() {
   // Auth states
   const [user, setUser] = useState<any>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'phone'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [phone, setPhone] = useState('');
-  const [code, setCode] = useState('');
-  const [codeSent, setCodeSent] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(false);
 
   // Add/Edit category modal
@@ -134,34 +131,6 @@ export function SettingsPageContent() {
     }
   };
 
-  const handlePhoneAuth = async () => {
-    setIsAuthLoading(true);
-
-    try {
-      if (!supabase) {
-        toast.error('系统未配置');
-        return;
-      }
-
-      if (!codeSent) {
-        const { error } = await supabase.auth.signInWithOtp({ phone });
-        if (error) throw error;
-        setCodeSent(true);
-        toast.success('验证码已发送');
-      } else {
-        const { error } = await supabase.auth.verifyOtp({ phone, token: code, type: 'phone' });
-        if (error) throw error;
-        toast.success('登录成功');
-        await checkUser();
-        setShowAuthModal(false);
-      }
-    } catch (error: any) {
-      toast.error(error.message || '操作失败');
-    } finally {
-      setIsAuthLoading(false);
-    }
-  };
-
   const handleWeChatLogin = async () => {
     try {
       if (!supabase) {
@@ -172,13 +141,13 @@ export function SettingsPageContent() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: window.location.origin,
+          redirectTo: `${window.location.origin}/api/auth/callback`,
         }
       });
 
       if (error) throw error;
     } catch (error: any) {
-      toast.error(error.message || '微信登录失败');
+      toast.error(error.message || '登录失败');
     }
   };
 
@@ -557,109 +526,57 @@ export function SettingsPageContent() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {authMode === 'login' ? '登录' : authMode === 'signup' ? '注册' : '手机号登录'}
+              {authMode === 'login' ? '登录' : '注册'}
             </DialogTitle>
           </DialogHeader>
 
-          {authMode === 'phone' ? (
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <Label>手机号</Label>
-                <Input
-                  type="tel"
-                  placeholder="+86 138xxxx1234"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                />
-              </div>
-              {codeSent && (
-                <div className="space-y-2">
-                  <Label>验证码</Label>
-                  <Input
-                    type="text"
-                    placeholder="请输入验证码"
-                    value={code}
-                    onChange={(e) => setCode(e.target.value)}
-                  />
-                </div>
-              )}
-              <Button onClick={handlePhoneAuth} className="w-full" disabled={isAuthLoading}>
-                {isAuthLoading ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : codeSent ? (
-                  '验证登录'
-                ) : (
-                  '发送验证码'
-                )}
-              </Button>
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={() => setAuthMode('login')} className="flex-1">
-                  邮箱登录
-                </Button>
-                <Button variant="outline" onClick={() => setAuthMode('signup')} className="flex-1">
-                  邮箱注册
-                </Button>
-              </div>
+          <form onSubmit={handleEmailAuth} className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>邮箱</Label>
+              <Input
+                type="email"
+                placeholder="your@email.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
             </div>
-          ) : (
-            <form onSubmit={handleEmailAuth} className="space-y-4 py-4">
-              <div className="space-y-2">
-                <Label>邮箱</Label>
-                <Input
-                  type="email"
-                  placeholder="your@email.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>密码</Label>
-                <Input
-                  type="password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  minLength={6}
-                />
-              </div>
-              <Button type="submit" className="w-full" disabled={isAuthLoading}>
-                {isAuthLoading ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : authMode === 'login' ? (
-                  '登录'
-                ) : (
-                  '注册'
-                )}
-              </Button>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setAuthMode('phone')}
-                  className="flex-1"
-                >
-                  手机号登录
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={handleWeChatLogin}
-                  className="flex-1"
-                >
-                  微信登录
-                </Button>
-              </div>
-              <button
-                type="button"
-                onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-                className="w-full text-sm text-gray-500 hover:text-gray-700"
-              >
-                {authMode === 'login' ? '还没有账号？注册' : '已有账号？登录'}
-              </button>
-            </form>
-          )}
+            <div className="space-y-2">
+              <Label>密码</Label>
+              <Input
+                type="password"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={6}
+              />
+            </div>
+            <Button type="submit" className="w-full" disabled={isAuthLoading}>
+              {isAuthLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : authMode === 'login' ? (
+                '登录'
+              ) : (
+                '注册'
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleWeChatLogin}
+              className="w-full"
+            >
+              微信登录
+            </Button>
+            <button
+              type="button"
+              onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+              className="w-full text-sm text-gray-500 hover:text-gray-700"
+            >
+              {authMode === 'login' ? '还没有账号？注册' : '已有账号？登录'}
+            </button>
+          </form>
         </DialogContent>
       </Dialog>
 

@@ -53,3 +53,10 @@ export async function getSession(): Promise<any> {
   const { data: { session } } = await supabase.auth.getSession();
   return session;
 }
+
+// Get current auth token for API calls
+export async function getAuthToken(): Promise<string | null> {
+  if (!supabase) return null;
+  const { data: { session } } = await supabase.auth.getSession();
+  return session?.access_token || null;
+}
