@@ -1,42 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ContentBlock } from '@/types';
-
-// In-memory content blocks storage (simulating Supabase)
-const inMemoryBlocks: ContentBlock[] = [];
-
-export async function GET(request: NextRequest) {
-  try {
-    const searchParams = request.nextUrl.searchParams;
-    const category = searchParams.get('category');
-    const blockId = searchParams.get('id');
-
-    // Get single block
-    if (blockId) {
-      const block = inMemoryBlocks.find(b => b.id === blockId);
-      if (!block) {
-        return NextResponse.json({ error: 'Block not found' }, { status: 404 });
-      }
-      return NextResponse.json(block);
-    }
-
-    // Filter blocks
-    let filtered = [...inMemoryBlocks];
-
-    if (category) {
-      filtered = filtered.filter(b => b.category === category);
-    }
-
-    // Sort by created_at desc
-    filtered.sort((a, b) =>
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
-
-    return NextResponse.json(filtered);
-  } catch (error) {
-    console.error('Error fetching blocks:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
-  }
-}
+import { supabase, getCurrentUser } from '@/lib/supabase/client';
 
 export async function PATCH(request: NextRequest) {
   try {
@@ -46,14 +9,27 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'block_id is required' }, { status: 400 });
     }
 
-    const blockIndex = inMemoryBlocks.findIndex(b => b.id === block_id);
-    if (blockIndex === -1) {
+    const user = await getCurrentUser();
+    if (!user || !supabase) {
+      return NextResponse.json({ error: 'User not authenticated' }, { status: 401 });
+    }
+
+    const userId = user.id;
+
+    // Get current block
+    const { data: block, error: fetchError } = await supabase
+      .from('content_blocks')
+      .select('*')
+      .eq('id', block_id)
+      .single();
+
+    if (fetchError || !block) {
       return NextResponse.json({ error: 'Block not found' }, { status: 404 });
     }
 
     // Handle keyword-level favorite toggle
     if (keyword) {
-      const favoriteKeywords = inMemoryBlocks[blockIndex].favorite_keywords || [];
+      const favoriteKeywords = block.favorite_keywords || [];
 
       if (is_favorite === true && !favoriteKeywords.includes(keyword)) {
         favoriteKeywords.push(keyword);
@@ -62,25 +38,34 @@ export async function PATCH(request: NextRequest) {
         if (idx > -1) favoriteKeywords.splice(idx, 1);
       }
 
-      inMemoryBlocks[blockIndex] = {
-        ...inMemoryBlocks[blockIndex],
-        favorite_keywords: favoriteKeywords,
-        updated_at: new Date().toISOString(),
-      };
+      const { data, error } = await supabase
+        .from('content_blocks')
+        .update({ favorite_keywords: favoriteKeywords, updated_at: new Date().toISOString() })
+        .eq('id', block_id)
+        .select()
+        .single();
 
-      return NextResponse.json(inMemoryBlocks[blockIndex]);
+      if (error) {
+        return NextResponse.json({ error: 'Failed to update' }, { status: 500 });
+      }
+      return NextResponse.json(data);
     }
 
     // Handle block-level favorite toggle
-    const newFavoriteState = is_favorite !== undefined ? is_favorite : !inMemoryBlocks[blockIndex].is_favorite;
+    const newFavoriteState = is_favorite !== undefined ? is_favorite : !block.is_favorite;
 
-    inMemoryBlocks[blockIndex] = {
-      ...inMemoryBlocks[blockIndex],
-      is_favorite: newFavoriteState,
-      updated_at: new Date().toISOString(),
-    };
+    const { data, error } = await supabase
+      .from('content_blocks')
+      .update({ is_favorite: newFavoriteState, updated_at: new Date().toISOString() })
+      .eq('id', block_id)
+      .select()
+      .single();
 
-    return NextResponse.json(inMemoryBlocks[blockIndex]);
+    if (error) {
+      return NextResponse.json({ error: 'Failed to update' }, { status: 500 });
+    }
+
+    return NextResponse.json(data);
   } catch (error) {
     console.error('Error updating block:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -89,11 +74,17 @@ export async function PATCH(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    const user = await getCurrentUser();
+    if (!user || !supabase) {
+      return NextResponse.json({ error: 'User not authenticated' }, { status: 401 });
+    }
 
-    const newBlock: ContentBlock = {
+    const body = await request.json();
+    const now = new Date().toISOString();
+
+    const newBlock = {
       id: crypto.randomUUID(),
-      user_id: body.user_id || 'demo-user',
+      user_id: user.id,
       entry_id: body.entry_id || '',
       category: body.category || '其他',
       content: body.content || '',
@@ -101,13 +92,22 @@ export async function POST(request: NextRequest) {
       favorite_keywords: [],
       is_manual: body.is_manual || false,
       is_favorite: false,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      created_at: now,
+      updated_at: now,
     };
 
-    inMemoryBlocks.unshift(newBlock);
+    const { data, error } = await supabase
+      .from('content_blocks')
+      .insert([newBlock])
+      .select()
+      .single();
 
-    return NextResponse.json(newBlock, { status: 201 });
+    if (error) {
+      console.error('Error creating block:', error);
+      return NextResponse.json({ error: 'Failed to create' }, { status: 500 });
+    }
+
+    return NextResponse.json(data, { status: 201 });
   } catch (error) {
     console.error('Error creating block:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -123,12 +123,20 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 });
     }
 
-    const blockIndex = inMemoryBlocks.findIndex(b => b.id === id);
-    if (blockIndex === -1) {
-      return NextResponse.json({ error: 'Block not found' }, { status: 404 });
+    const user = await getCurrentUser();
+    if (!user || !supabase) {
+      return NextResponse.json({ error: 'User not authenticated' }, { status: 401 });
     }
 
-    inMemoryBlocks.splice(blockIndex, 1);
+    const { error } = await supabase
+      .from('content_blocks')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', user.id);
+
+    if (error) {
+      return NextResponse.json({ error: 'Failed to delete' }, { status: 500 });
+    }
 
     return new NextResponse(null, { status: 204 });
   } catch (error) {

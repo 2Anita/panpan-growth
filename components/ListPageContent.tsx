@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
+import { useAuth } from '@/components/AuthProvider';
 
 interface BlockWithEntry {
   id: string;
@@ -42,6 +43,7 @@ const TIME_FILTER_LABELS: Record<TimeFilter, string> = {
 export function ListPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { isAuthenticated } = useAuth();
   const [searchQuery, setSearchQuery] = useState(searchParams.get('q') || '');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(
     searchParams.get('category') || null
@@ -53,10 +55,19 @@ export function ListPageContent() {
 
   const categories = DEFAULT_CATEGORIES;
 
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!loading && !isAuthenticated) {
+      router.push('/login');
+    }
+  }, [isAuthenticated, loading, router]);
+
   // Fetch blocks when filters change
   useEffect(() => {
-    fetchBlocks();
-  }, [selectedCategory, timeFilter]);
+    if (isAuthenticated) {
+      fetchBlocks();
+    }
+  }, [selectedCategory, timeFilter, isAuthenticated]);
 
   const fetchBlocks = async () => {
     setLoading(true);

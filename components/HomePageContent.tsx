@@ -5,6 +5,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { InputCard } from '@/components/InputCard';
 import { BottomNav } from '@/components/BottomNav';
 import { RecordCard } from '@/components/RecordCard';
+import { useAuth } from '@/components/AuthProvider';
 import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
 import { ReflectionRecord, DEFAULT_CATEGORIES, CATEGORY_COLORS } from '@/types';
@@ -14,13 +15,16 @@ export function HomePageContent() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [pendingText, setPendingText] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const { user, signInAnon, isAuthenticated, loading } = useAuth();
 
   const today = new Date();
   const greeting = getGreeting();
 
   useEffect(() => {
-    fetchRecords();
-  }, []);
+    if (isAuthenticated) {
+      fetchRecords();
+    }
+  }, [isAuthenticated]);
 
   const fetchRecords = async () => {
     try {
@@ -35,6 +39,11 @@ export function HomePageContent() {
   };
 
   const handleSubmit = async (content: string) => {
+    if (!isAuthenticated) {
+      toast.error('请先登录');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const response = await fetch('/api/records', {
@@ -62,7 +71,9 @@ export function HomePageContent() {
   };
 
   const handleVoiceClick = () => {
-    // Voice is now handled inline in InputCard
+    if (!isAuthenticated) {
+      toast.error('请先登录');
+    }
   };
 
   const handleCategorySelect = (categoryName: string) => {
@@ -72,6 +83,38 @@ export function HomePageContent() {
       setSelectedCategory(categoryName);
     }
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950">
+        <div className="text-gray-500">加载中...</div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 p-4">
+        <Card className="w-full max-w-md">
+          <CardContent className="py-8 text-center">
+            <div className="text-5xl mb-4">👋</div>
+            <h3 className="text-lg font-medium text-gray-700 dark:text-gray-300">
+              欢迎使用盘盘成长
+            </h3>
+            <p className="text-sm text-gray-500 mt-2 mb-4">
+              请先登录后再使用
+            </p>
+            <button
+              onClick={signInAnon}
+              className="px-6 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600"
+            >
+              匿名登录
+            </button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen pb-24 bg-gray-50 dark:bg-gray-950">

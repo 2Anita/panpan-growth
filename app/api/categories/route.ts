@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseClient } from '@/lib/supabase/client';
+import { supabase, getCurrentUser } from '@/lib/supabase/client';
 import { DEFAULT_CATEGORIES, UserCategory } from '@/types';
 
 // In-memory store for user categories (fallback when Supabase is not available)
@@ -7,10 +7,13 @@ const inMemoryUserCategories: UserCategory[] = [];
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = getSupabaseClient();
-
-    // If Supabase is not configured, use in-memory only
+    // If Supabase is not configured, use defaults
     if (!supabase) {
+      return NextResponse.json(DEFAULT_CATEGORIES);
+    }
+
+    const user = await getCurrentUser();
+    if (!user) {
       return NextResponse.json(DEFAULT_CATEGORIES);
     }
 
@@ -18,6 +21,7 @@ export async function GET(request: NextRequest) {
     const { data, error } = await supabase
       .from('user_categories')
       .select('*')
+      .eq('user_id', user.id)
       .order('sort_order', { ascending: true });
 
     if (error) {
@@ -42,6 +46,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'name, color, and icon are required' }, { status: 400 });
     }
 
+    const user = await getCurrentUser();
+    const userId = user?.id || 'anonymous';
+
     // Check for duplicate names (including defaults)
     const allCategories = [...DEFAULT_CATEGORIES, ...inMemoryUserCategories];
     const exists = allCategories.some(c => c.name === name);
@@ -52,7 +59,7 @@ export async function POST(request: NextRequest) {
     // Prepare new category object
     const newCategory: UserCategory = {
       id: crypto.randomUUID(),
-      user_id: 'demo-user',
+      user_id: userId,
       name,
       color,
       icon,
@@ -64,14 +71,12 @@ export async function POST(request: NextRequest) {
       created_at: new Date().toISOString(),
     };
 
-    const supabase = getSupabaseClient();
-
-    // Try to insert into Supabase if available
-    if (supabase) {
+    // Try to insert into Supabase if available and user is authenticated
+    if (supabase && user) {
       const { data, error } = await supabase
         .from('user_categories')
         .insert([{
-          user_id: 'demo-user',
+          user_id: userId,
           name,
           color,
           icon,
@@ -107,9 +112,10 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 });
     }
 
-    const supabase = getSupabaseClient();
+    const user = await getCurrentUser();
+    const userId = user?.id || 'anonymous';
 
-    if (supabase) {
+    if (supabase && user) {
       const updates: Record<string, string> = {};
       if (name) updates.name = name;
       if (color) updates.color = color;
@@ -119,6 +125,7 @@ export async function PATCH(request: NextRequest) {
         .from('user_categories')
         .update(updates)
         .eq('id', id)
+        .eq('user_id', userId)
         .select()
         .single();
 
@@ -152,13 +159,15 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 });
     }
 
-    const supabase = getSupabaseClient();
+    const user = await getCurrentUser();
+    const userId = user?.id || 'anonymous';
 
-    if (supabase) {
+    if (supabase && user) {
       const { error } = await supabase
         .from('user_categories')
         .delete()
-        .eq('id', id);
+        .eq('id', id)
+        .eq('user_id', userId);
 
       if (!error) {
         return new NextResponse(null, { status: 204 });
