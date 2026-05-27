@@ -5,42 +5,63 @@ import { Card, CardContent } from '@/components/ui/card';
 import { InputCard } from '@/components/InputCard';
 import { BottomNav } from '@/components/BottomNav';
 import { RecordCard } from '@/components/RecordCard';
-import { useAuth } from '@/components/AuthProvider';
 import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
-import { ReflectionRecord, DEFAULT_CATEGORIES, CATEGORY_COLORS } from '@/types';
+import { DEFAULT_CATEGORIES, CATEGORY_COLORS } from '@/types';
 
 export function HomePageContent() {
-  const [records, setRecords] = useState<ReflectionRecord[]>([]);
+  const [records, setRecords] = useState<any[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [pendingText, setPendingText] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const { user, isAuthenticated, loading } = useAuth();
+  const [loading, setLoading] = useState(true);
 
   const today = new Date();
   const greeting = getGreeting();
 
   useEffect(() => {
-    if (isAuthenticated) {
-      fetchRecords();
-    }
-  }, [isAuthenticated]);
+    fetchRecords();
+  }, []);
 
   const fetchRecords = async () => {
+    setLoading(true);
     try {
-      const response = await fetch('/api/records?limit=10');
+      const response = await fetch('/api/records?blocks_only=true&limit=20');
       if (response.ok) {
         const data = await response.json();
-        setRecords(data);
+        // Group blocks by entry_id to create records
+        const grouped = groupBlocksByEntry(data);
+        setRecords(grouped);
       }
     } catch (error) {
       console.error('Failed to fetch records:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
+  const groupBlocksByEntry = (blocks: any[]) => {
+    const entryMap = new Map<string, any>();
+    blocks.forEach(block => {
+      if (!entryMap.has(block.entry_id)) {
+        entryMap.set(block.entry_id, {
+          id: block.entry_id,
+          content: block.original_content || '',
+          summary: block.content,
+          keywords: block.keywords,
+          categories: [block.category],
+          created_at: block.created_at,
+          blocks: [],
+        });
+      }
+      entryMap.get(block.entry_id).blocks.push(block);
+    });
+    return Array.from(entryMap.values());
+  };
+
   const handleSubmit = async (content: string) => {
-    if (!isAuthenticated) {
-      toast.error('请先登录');
+    if (!content.trim()) {
+      toast.error('请输入内容');
       return;
     }
 
@@ -59,7 +80,7 @@ export function HomePageContent() {
       if (!response.ok) throw new Error('Failed to save record');
 
       const newRecord = await response.json();
-      setRecords((prev) => [newRecord, ...prev]);
+      setRecords(prev => [newRecord, ...prev]);
       toast.success('复盘已保存');
       setSelectedCategory(null);
       setPendingText('');
@@ -71,9 +92,7 @@ export function HomePageContent() {
   };
 
   const handleVoiceClick = () => {
-    if (!isAuthenticated) {
-      toast.error('请先登录');
-    }
+    // Voice is handled inline in InputCard
   };
 
   const handleCategorySelect = (categoryName: string) => {
@@ -88,30 +107,6 @@ export function HomePageContent() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950">
         <div className="text-gray-500">加载中...</div>
-      </div>
-    );
-  }
-
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 p-4">
-        <Card className="w-full max-w-md">
-          <CardContent className="py-8 text-center">
-            <div className="text-5xl mb-4">👋</div>
-            <h3 className="text-lg font-medium text-gray-700 dark:text-gray-300">
-              欢迎使用盘盘成长
-            </h3>
-            <p className="text-sm text-gray-500 mt-2 mb-4">
-              请先登录后再使用
-            </p>
-            <button
-              onClick={() => window.location.href = '/login'}
-              className="px-6 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600"
-            >
-              登录
-            </button>
-          </CardContent>
-        </Card>
       </div>
     );
   }

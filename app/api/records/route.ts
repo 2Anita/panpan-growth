@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase, getCurrentUser } from '@/lib/supabase/client';
-import { DEFAULT_CATEGORIES, CATEGORY_COLORS } from '@/types';
+import { DEFAULT_CATEGORIES } from '@/types';
 
-// Valid categories mapping
+// In-memory stores for local/demo mode
+const inMemoryRecords: any[] = [];
+const inMemoryBlocks: any[] = [];
+
+// Valid categories mapping - strict mapping
 const VALID_CATEGORIES: Record<string, string> = {
   '创意灵感': '创意灵感',
   '问题解决': '问题解决',
@@ -12,20 +15,24 @@ const VALID_CATEGORIES: Record<string, string> = {
   '其他': '其他',
 };
 
+// Normalize category name to valid category
+function normalizeCategory(cat: string): string {
+  return VALID_CATEGORIES[cat] || '其他';
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const { content, content_type = 'text', customCategories, preferredCategory } = await request.json();
+    const { content, content_type = 'text', preferredCategory } = await request.json();
 
     if (!content) {
       return NextResponse.json({ error: 'Content is required' }, { status: 400 });
     }
 
-    const user = await getCurrentUser();
-    const userId = user?.id || 'anonymous-user';
+    const userId = 'local-user'; // Default for non-logged in users
+    const now = new Date().toISOString();
 
-    // Build category list
-    const categories = customCategories || DEFAULT_CATEGORIES;
-    const categoryList = categories.map((c: { name: string; keywords: string[] }) =>
+    // Build category list for AI
+    const categoryList = DEFAULT_CATEGORIES.map((c: any) =>
       `${c.name}（关键词：${c.keywords?.join(',') || ''}）`
     ).join('\n');
 
@@ -39,7 +46,7 @@ export async function POST(request: NextRequest) {
     let blocks: any[] = [];
     const aiApiKey = process.env.DEEPSEEK_API_KEY;
 
-    if (aiApiKey && aiApiKey !== 'your-deepseek-api-key-here') {
+    if (aiApiKey && !aiApiKey.includes('your-')) {
       try {
         const deepseekResponse = await fetch('https://api.deepseek.com/chat/completions', {
           method: 'POST',
@@ -103,7 +110,7 @@ ${categoryList}
 
             if (Array.isArray(parsed)) {
               blocks = parsed.map((block: any) => ({
-                category: VALID_CATEGORIES[block.category] || '其他',
+                category: normalizeCategory(block.category),
                 content: block.content || '',
                 keywords: Array.isArray(block.keywords) ? block.keywords.slice(0, 5) : [],
               }));
@@ -116,7 +123,7 @@ ${categoryList}
                 const parsed = JSON.parse(jsonMatch[0]);
                 if (Array.isArray(parsed)) {
                   blocks = parsed.map((block: any) => ({
-                    category: VALID_CATEGORIES[block.category] || '其他',
+                    category: normalizeCategory(block.category),
                     content: block.content || '',
                     keywords: Array.isArray(block.keywords) ? block.keywords.slice(0, 5) : [],
                   }));
@@ -135,75 +142,18 @@ ${categoryList}
     // Fallback if no blocks generated
     if (blocks.length === 0) {
       blocks = [{
-        category: '其他',
+        category: normalizeCategory(preferredCategory || '其他'),
         content: content.slice(0, 200),
         keywords: [],
       }];
     }
 
-    // Prepare data for Supabase
-    const recordId = crypto.randomUUID();
-    const now = new Date().toISOString();
-
-    // Save to Supabase if available and user is authenticated
-    let savedRecord: any = null;
-    let savedBlocks: any[] = [];
-
-    if (supabase && user) {
-      try {
-        // Save the main record
-        const { data: recordData, error: recordError } = await supabase
-          .from('records')
-          .insert({
-            id: recordId,
-            user_id: userId,
-            content,
-            content_type,
-            summary: blocks.map(b => b.content).join('；').slice(0, 200),
-            keywords: blocks.flatMap(b => b.keywords || []),
-            categories: blocks.map(b => b.category),
-            todos: [],
-            created_at: now,
-            updated_at: now,
-          })
-          .select()
-          .single();
-
-        if (!recordError && recordData) {
-          savedRecord = recordData;
-
-          // Save content blocks
-          const blocksToSave = blocks.map((block, index) => ({
-            id: crypto.randomUUID(),
-            user_id: userId,
-            entry_id: recordId,
-            category: block.category,
-            content: block.content,
-            keywords: block.keywords || [],
-            is_manual: false,
-            is_favorite: false,
-            created_at: now,
-            updated_at: now,
-          }));
-
-          const { data: blocksData, error: blocksError } = await supabase
-            .from('content_blocks')
-            .insert(blocksToSave)
-            .select();
-
-          if (!blocksError && blocksData) {
-            savedBlocks = blocksData;
-          }
-        }
-      } catch (dbError) {
-        console.error('Supabase save error:', dbError);
-      }
-    }
-
-    // Build response
+    // Generate summary
     const summary = blocks.map(b => b.content).join('；').slice(0, 100);
 
-    const response = {
+    // Create record
+    const recordId = crypto.randomUUID();
+    const record = {
       id: recordId,
       user_id: userId,
       content,
@@ -215,7 +165,7 @@ ${categoryList}
       created_at: now,
       updated_at: now,
       is_favorite: false,
-      blocks: savedBlocks.length > 0 ? savedBlocks : blocks.map((b, i) => ({
+      blocks: blocks.map((b: any, i: number) => ({
         id: crypto.randomUUID(),
         user_id: userId,
         entry_id: recordId,
@@ -230,7 +180,11 @@ ${categoryList}
       })),
     };
 
-    return NextResponse.json(response);
+    // Store in memory
+    inMemoryRecords.unshift(record);
+    record.blocks.forEach((block: any) => inMemoryBlocks.unshift(block));
+
+    return NextResponse.json(record);
   } catch (error) {
     console.error('Error saving record:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -244,78 +198,110 @@ export async function GET(request: NextRequest) {
     const category = searchParams.get('category');
     const searchQuery = searchParams.get('q');
     const blocksOnly = searchParams.get('blocks_only') === 'true';
-    const favoritesOnly = searchParams.get('favorites') === 'true';
     const timeFilter = searchParams.get('time');
 
-    const user = await getCurrentUser();
-    const userId = user?.id || 'anonymous-user';
+    let filteredBlocks = [...inMemoryBlocks];
 
-    // Try to fetch from Supabase if user is authenticated
-    if (supabase && user) {
-      let query = supabase
-        .from('content_blocks')
-        .select('*')
-        .eq('user_id', userId);
-
-      if (category) {
-        query = query.eq('category', category);
-      }
-
-      if (searchQuery) {
-        query = query.or(`content.ilike.%${searchQuery}%,keywords.cs.{${searchQuery}}`);
-      }
-
-      if (favoritesOnly) {
-        query = query.eq('is_favorite', true);
-      }
-
-      if (timeFilter && timeFilter !== 'all') {
-        const now = new Date();
-        let startDate: string;
-        switch (timeFilter) {
-          case 'today':
-            startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-            break;
-          case 'week':
-            startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
-            break;
-          case 'month':
-            startDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-            break;
-          default:
-            startDate = '1970-01-01T00:00:00Z';
-        }
-        query = query.gte('created_at', startDate);
-      }
-
-      query = query.order('created_at', { ascending: false }).limit(limit);
-
-      const { data: blocks, error } = await query;
-
-      if (!error && blocks && blocks.length > 0) {
-        // Get original content from records
-        const entryIds = [...new Set(blocks.map((b: any) => b.entry_id))];
-        const { data: records } = await supabase
-          .from('records')
-          .select('id, content')
-          .in('id', entryIds);
-
-        const recordsMap: Record<string, string> = {};
-        records?.forEach((r: any) => {
-          recordsMap[r.id] = r.content;
-        });
-
-        return NextResponse.json(blocks.map((b: any) => ({
-          ...b,
-          original_content: recordsMap[b.entry_id] || '',
-        })));
-      }
+    // Filter by category
+    if (category) {
+      filteredBlocks = filteredBlocks.filter(b => b.category === category);
     }
 
-    // Return empty if not authenticated
-    return NextResponse.json([]);
+    // Filter by search query
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      filteredBlocks = filteredBlocks.filter(b =>
+        b.content.toLowerCase().includes(query) ||
+        (b.keywords && b.keywords.some((k: string) => k.toLowerCase().includes(query)))
+      );
+    }
+
+    // Filter by time
+    if (timeFilter && timeFilter !== 'all') {
+      const now = new Date();
+      let startDate: Date;
+      switch (timeFilter) {
+        case 'today':
+          startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          break;
+        case 'week':
+          startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          break;
+        case 'month':
+          startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+          break;
+        default:
+          startDate = new Date(0);
+      }
+      filteredBlocks = filteredBlocks.filter(b => new Date(b.created_at) >= startDate);
+    }
+
+    // Sort by created_at desc
+    filteredBlocks.sort((a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    // Add original content
+    const blocksWithOriginal = filteredBlocks.slice(0, limit).map(block => {
+      const entry = inMemoryRecords.find(r => r.id === block.entry_id);
+      return {
+        ...block,
+        original_content: entry?.content || '',
+      };
+    });
+
+    return NextResponse.json(blocksWithOriginal);
   } catch (error) {
     console.error('Error fetching records:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const { block_id, keyword, is_favorite } = await request.json();
+
+    if (!block_id) {
+      return NextResponse.json({ error: 'block_id is required' }, { status: 400 });
+    }
+
+    const blockIndex = inMemoryBlocks.findIndex(b => b.id === block_id);
+    if (blockIndex === -1) {
+      return NextResponse.json({ error: 'Block not found' }, { status: 404 });
+    }
+
+    // Handle keyword favorite toggle
+    if (keyword) {
+      const favoriteKeywords = inMemoryBlocks[blockIndex].favorite_keywords || [];
+
+      if (is_favorite === true && !favoriteKeywords.includes(keyword)) {
+        favoriteKeywords.push(keyword);
+      } else if (is_favorite === false) {
+        const idx = favoriteKeywords.indexOf(keyword);
+        if (idx > -1) favoriteKeywords.splice(idx, 1);
+      }
+
+      inMemoryBlocks[blockIndex] = {
+        ...inMemoryBlocks[blockIndex],
+        favorite_keywords: favoriteKeywords,
+        updated_at: new Date().toISOString(),
+      };
+
+      return NextResponse.json(inMemoryBlocks[blockIndex]);
+    }
+
+    // Handle block favorite toggle
+    const newFavoriteState = is_favorite !== undefined ? is_favorite : !inMemoryBlocks[blockIndex].is_favorite;
+
+    inMemoryBlocks[blockIndex] = {
+      ...inMemoryBlocks[blockIndex],
+      is_favorite: newFavoriteState,
+      updated_at: new Date().toISOString(),
+    };
+
+    return NextResponse.json(inMemoryBlocks[blockIndex]);
+  } catch (error) {
+    console.error('Error updating block:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

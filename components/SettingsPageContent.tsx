@@ -7,8 +7,7 @@ import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { BottomNav } from '@/components/BottomNav';
-import { Plus, Trash2, Sun, Moon, FileText, Database, AlertTriangle, Star, ChevronRight, Loader2 } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { Plus, Trash2, Sun, Moon, FileText, Database, AlertTriangle, Star, ChevronRight, Loader2, LogIn, LogOut, User } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
 import {
   Dialog,
@@ -19,6 +18,7 @@ import {
 } from '@/components/ui/dialog';
 import { CATEGORY_COLORS, DEFAULT_CATEGORIES } from '@/types';
 import { toast } from 'sonner';
+import { supabase } from '@/lib/supabase/client';
 
 const PRESET_COLORS = [
   '#8B5CF6', '#3B82F6', '#EC4899', '#10B981', '#F59E0B', '#EF4444', '#6B7280',
@@ -40,10 +40,20 @@ interface CategoryItem {
 
 export function SettingsPageContent() {
   const { theme, toggleTheme } = useTheme();
-  const router = useRouter();
   const [categories, setCategories] = useState<CategoryItem[]>(DEFAULT_CATEGORIES as CategoryItem[]);
   const [isDark, setIsDark] = useState(theme === 'dark');
   const [loadingCategories, setLoadingCategories] = useState(true);
+
+  // Auth states
+  const [user, setUser] = useState<any>(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'phone'>('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
 
   // Add/Edit category modal
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -64,12 +74,19 @@ export function SettingsPageContent() {
   useEffect(() => {
     setIsDark(theme === 'dark');
     loadCategories();
+    checkUser();
   }, [theme]);
+
+  const checkUser = async () => {
+    if (!supabase) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    setUser(user);
+  };
 
   const loadCategories = async () => {
     setLoadingCategories(true);
     try {
-      const response = await fetch('/api/records?categories_only=true');
+      const response = await fetch('/api/categories');
       if (response.ok) {
         const data = await response.json();
         if (data.length > 0) {
@@ -85,6 +102,95 @@ export function SettingsPageContent() {
 
   const handleToggleTheme = () => {
     toggleTheme();
+  };
+
+  // Auth handlers
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsAuthLoading(true);
+
+    try {
+      if (!supabase) {
+        toast.error('系统未配置');
+        return;
+      }
+
+      if (authMode === 'login') {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        toast.success('登录成功');
+      } else {
+        const { error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+        toast.success('注册成功，请查收验证邮件');
+      }
+
+      await checkUser();
+      setShowAuthModal(false);
+    } catch (error: any) {
+      toast.error(error.message || '操作失败');
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handlePhoneAuth = async () => {
+    setIsAuthLoading(true);
+
+    try {
+      if (!supabase) {
+        toast.error('系统未配置');
+        return;
+      }
+
+      if (!codeSent) {
+        const { error } = await supabase.auth.signInWithOtp({ phone });
+        if (error) throw error;
+        setCodeSent(true);
+        toast.success('验证码已发送');
+      } else {
+        const { error } = await supabase.auth.verifyOtp({ phone, token: code, type: 'phone' });
+        if (error) throw error;
+        toast.success('登录成功');
+        await checkUser();
+        setShowAuthModal(false);
+      }
+    } catch (error: any) {
+      toast.error(error.message || '操作失败');
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleWeChatLogin = async () => {
+    try {
+      if (!supabase) {
+        toast.error('系统未配置');
+        return;
+      }
+
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+        }
+      });
+
+      if (error) throw error;
+    } catch (error: any) {
+      toast.error(error.message || '微信登录失败');
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      if (!supabase) return;
+      await supabase.auth.signOut();
+      setUser(null);
+      toast.success('已退出登录');
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
   };
 
   // Open add category modal
@@ -105,7 +211,7 @@ export function SettingsPageContent() {
     setShowCategoryModal(true);
   };
 
-  // Save category (add or update) - now persists to API
+  // Save category
   const handleSaveCategory = async () => {
     if (!newCategoryName.trim()) {
       toast.error('请输入分类名称');
@@ -125,16 +231,14 @@ export function SettingsPageContent() {
         }),
       });
 
-      if (!response.ok) throw new Error('Failed to save category');
+      if (!response.ok) throw new Error('Failed to save');
 
       toast.success(editingCategory ? '分类已更新' : '标签已同步至 AI 脑库');
-
-      // Reload categories
       await loadCategories();
       setShowCategoryModal(false);
     } catch (error) {
       console.error('Failed to save category:', error);
-      toast.error('保存分类失败');
+      toast.error('保存失败');
     } finally {
       setSavingCategory(false);
     }
@@ -146,7 +250,7 @@ export function SettingsPageContent() {
     setShowDeleteModal(true);
   };
 
-  // Confirm delete category
+  // Confirm delete
   const handleConfirmDelete = async () => {
     if (!categoryToDelete) return;
 
@@ -159,20 +263,18 @@ export function SettingsPageContent() {
       if (!response.ok && response.status !== 204) throw new Error('Failed to delete');
 
       toast.success('分类已删除');
-
-      // Reload categories
       await loadCategories();
       setShowDeleteModal(false);
       setCategoryToDelete(null);
     } catch (error) {
       console.error('Failed to delete category:', error);
-      toast.error('删除分类失败');
+      toast.error('删除失败');
     } finally {
       setDeletingCategory(false);
     }
   };
 
-  // Export as Markdown
+  // Export handlers
   const handleExportMarkdown = async () => {
     setExporting(true);
     toast.info('正在导出...');
@@ -184,31 +286,14 @@ export function SettingsPageContent() {
       markdown += `导出时间：${new Date().toLocaleString('zh-CN')}\n\n`;
       markdown += `共 ${records.length} 条复盘记录\n\n`;
 
-      // Group by date
-      const groupedByDate: Record<string, typeof records> = {};
       records.forEach((record: any) => {
-        const date = new Date(record.created_at).toLocaleDateString('zh-CN');
-        if (!groupedByDate[date]) groupedByDate[date] = [];
-        groupedByDate[date].push(record);
+        markdown += `## ${new Date(record.created_at).toLocaleDateString('zh-CN')}\n\n`;
+        markdown += `${record.content}\n\n`;
+        if (record.summary) {
+          markdown += `> 精华：${record.summary}\n\n`;
+        }
+        markdown += '---\n\n';
       });
-
-      for (const [date, dateRecords] of Object.entries(groupedByDate)) {
-        markdown += `## ${date}\n\n`;
-        dateRecords.forEach((record: any) => {
-          const categories = record.blocks?.map((b: any) => b.category).join(', ') || '其他';
-          markdown += `### ${categories}\n\n`;
-          markdown += `${record.content}\n\n`;
-          if (record.summary) {
-            markdown += `> 精华：${record.summary}\n\n`;
-          }
-          // Add keywords if any
-          const keywords = record.blocks?.[0]?.keywords;
-          if (keywords && keywords.length > 0) {
-            markdown += `关键词：${keywords.map((k: string) => '#' + k).join(' ')}\n\n`;
-          }
-          markdown += '---\n\n';
-        });
-      }
 
       const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -220,13 +305,12 @@ export function SettingsPageContent() {
       toast.success('导出成功');
     } catch (error) {
       console.error('Export failed:', error);
-      toast.error('导出失败，请重试');
+      toast.error('导出失败');
     } finally {
       setExporting(false);
     }
   };
 
-  // Export as JSON
   const handleExportJSON = async () => {
     setExporting(true);
     toast.info('正在导出...');
@@ -234,32 +318,7 @@ export function SettingsPageContent() {
       const response = await fetch('/api/records?limit=1000');
       const records = await response.json();
 
-      const exportData = {
-        exported_at: new Date().toISOString(),
-        total_records: records.length,
-        categories: categories.map(c => ({
-          name: c.name,
-          color: c.color,
-          icon: c.icon,
-          is_system: c.is_system,
-        })),
-        records: records.map((record: any) => ({
-          id: record.id,
-          content: record.content,
-          content_type: record.content_type,
-          categories: record.categories,
-          summary: record.summary,
-          is_favorite: record.is_favorite,
-          created_at: record.created_at,
-          blocks: record.blocks?.map((b: any) => ({
-            category: b.category,
-            content: b.content,
-            keywords: b.keywords,
-          })),
-        })),
-      };
-
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json;charset=utf-8' });
+      const blob = new Blob([JSON.stringify(records, null, 2)], { type: 'application/json;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -269,7 +328,7 @@ export function SettingsPageContent() {
       toast.success('导出成功');
     } catch (error) {
       console.error('Export failed:', error);
-      toast.error('导出失败，请重试');
+      toast.error('导出失败');
     } finally {
       setExporting(false);
     }
@@ -283,6 +342,51 @@ export function SettingsPageContent() {
       </header>
 
       <main className="max-w-lg mx-auto px-4 py-6 space-y-6">
+        {/* Account Section */}
+        <Card>
+          <CardHeader className="pb-4">
+            <CardTitle className="text-base font-medium flex items-center gap-2">
+              <User className="w-4 h-4" />
+              账号
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {user ? (
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {user.email || user.phone || '已登录'}
+                  </p>
+                  <p className="text-xs text-gray-500">已同步到云端</p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleLogout}
+                  className="gap-2"
+                >
+                  <LogOut className="w-4 h-4" />
+                  退出
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-500">登录后可同步数据到云端</p>
+                <Button
+                  onClick={() => {
+                    setAuthMode('login');
+                    setShowAuthModal(true);
+                  }}
+                  className="w-full gap-2"
+                >
+                  <LogIn className="w-4 h-4" />
+                  登录 / 注册
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Theme Toggle */}
         <Card>
           <CardHeader className="pb-4">
@@ -421,7 +525,7 @@ export function SettingsPageContent() {
             <Button
               variant="outline"
               className="w-full justify-between"
-              onClick={() => router.push('/favorites')}
+              onClick={() => window.location.href = '/favorites'}
             >
               <span className="flex items-center gap-2">
                 <Star className="w-4 h-4" />
@@ -447,6 +551,117 @@ export function SettingsPageContent() {
           </CardContent>
         </Card>
       </main>
+
+      {/* Auth Modal */}
+      <Dialog open={showAuthModal} onOpenChange={setShowAuthModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {authMode === 'login' ? '登录' : authMode === 'signup' ? '注册' : '手机号登录'}
+            </DialogTitle>
+          </DialogHeader>
+
+          {authMode === 'phone' ? (
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label>手机号</Label>
+                <Input
+                  type="tel"
+                  placeholder="+86 138xxxx1234"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                />
+              </div>
+              {codeSent && (
+                <div className="space-y-2">
+                  <Label>验证码</Label>
+                  <Input
+                    type="text"
+                    placeholder="请输入验证码"
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                  />
+                </div>
+              )}
+              <Button onClick={handlePhoneAuth} className="w-full" disabled={isAuthLoading}>
+                {isAuthLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : codeSent ? (
+                  '验证登录'
+                ) : (
+                  '发送验证码'
+                )}
+              </Button>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => setAuthMode('login')} className="flex-1">
+                  邮箱登录
+                </Button>
+                <Button variant="outline" onClick={() => setAuthMode('signup')} className="flex-1">
+                  邮箱注册
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <form onSubmit={handleEmailAuth} className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label>邮箱</Label>
+                <Input
+                  type="email"
+                  placeholder="your@email.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>密码</Label>
+                <Input
+                  type="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  minLength={6}
+                />
+              </div>
+              <Button type="submit" className="w-full" disabled={isAuthLoading}>
+                {isAuthLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : authMode === 'login' ? (
+                  '登录'
+                ) : (
+                  '注册'
+                )}
+              </Button>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setAuthMode('phone')}
+                  className="flex-1"
+                >
+                  手机号登录
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleWeChatLogin}
+                  className="flex-1"
+                >
+                  微信登录
+                </Button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+                className="w-full text-sm text-gray-500 hover:text-gray-700"
+              >
+                {authMode === 'login' ? '还没有账号？注册' : '已有账号？登录'}
+              </button>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Add/Edit Category Modal */}
       <Dialog open={showCategoryModal} onOpenChange={setShowCategoryModal}>
