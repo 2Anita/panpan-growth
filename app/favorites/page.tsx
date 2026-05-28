@@ -4,13 +4,11 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { BottomNav } from '@/components/BottomNav';
-import { Search, X, Calendar, ChevronRight, Star, ArrowLeft } from 'lucide-react';
-import { ContentBlock, CATEGORY_COLORS, DEFAULT_CATEGORIES } from '@/types';
+import { Star, ArrowLeft } from 'lucide-react';
+import { CATEGORY_COLORS } from '@/types';
 import { formatDistanceToNow, formatDate } from '@/lib/utils';
 import { getAuthToken } from '@/lib/supabase/client';
-import { Badge } from '@/components/ui/badge';
 import {
   Dialog,
   DialogContent,
@@ -24,10 +22,11 @@ interface BlockWithEntry {
   entry_id: string;
   category: string;
   content: string;
+  summary?: string;
   keywords: string[];
   created_at: string;
   original_content: string;
-  is_favorite?: boolean;
+  is_favorite: boolean;
 }
 
 export default function FavoritesPage() {
@@ -47,31 +46,12 @@ export default function FavoritesPage() {
       const headers: HeadersInit = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
+      // Fetch blocks and filter by is_favorite
       const response = await fetch('/api/records?limit=100', { headers });
       if (response.ok) {
-        const records = await response.json();
+        const allBlocks = await response.json();
         // Filter to only favorites
-        const favoriteRecords = records.filter((r: any) => r.is_favorite);
-
-        // Extract blocks from favorite records
-        const favoriteBlocks: BlockWithEntry[] = [];
-        favoriteRecords.forEach((record: any) => {
-          if (record.blocks && Array.isArray(record.blocks)) {
-            record.blocks.forEach((block: any) => {
-              favoriteBlocks.push({
-                ...block,
-                original_content: record.content,
-                is_favorite: record.is_favorite,
-              });
-            });
-          }
-        });
-
-        // Sort by created_at desc
-        favoriteBlocks.sort((a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-        );
-
+        const favoriteBlocks = allBlocks.filter((b: any) => b.is_favorite === true);
         setBlocks(favoriteBlocks);
       }
     } catch (error) {
@@ -96,8 +76,8 @@ export default function FavoritesPage() {
 
       if (response.ok) {
         toast.success('已取消收藏');
-        // Remove from list
         setBlocks(prev => prev.filter(b => b.id !== blockId));
+        setSelectedBlock(null);
       }
     } catch (error) {
       console.error('Failed to unfavorite:', error);
@@ -107,7 +87,6 @@ export default function FavoritesPage() {
 
   return (
     <div className="min-h-screen pb-20 bg-gray-50 dark:bg-gray-950">
-      {/* Header */}
       <header className="sticky top-0 z-30 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800">
         <div className="px-4 py-4">
           <div className="flex items-center gap-3">
@@ -128,7 +107,6 @@ export default function FavoritesPage() {
         </div>
       </header>
 
-      {/* Favorites List */}
       <main className="max-w-lg mx-auto px-4 py-4">
         {loading ? (
           <div className="space-y-3">
@@ -159,10 +137,10 @@ export default function FavoritesPage() {
             {blocks.map((block) => (
               <div
                 key={block.id}
-                className="p-4 bg-white dark:bg-gray-900 rounded-xl border border-gray-100 dark:border-gray-800 hover:shadow-md transition-shadow"
+                onClick={() => setSelectedBlock(block)}
+                className="p-4 bg-white dark:bg-gray-900 rounded-xl border border-gray-100 dark:border-gray-800 hover:shadow-md transition-shadow cursor-pointer"
               >
                 <div className="flex items-start gap-3">
-                  {/* Category Tag */}
                   <span
                     className="px-2 py-1 rounded-full text-xs font-medium flex-shrink-0"
                     style={{
@@ -172,8 +150,6 @@ export default function FavoritesPage() {
                   >
                     {block.category}
                   </span>
-
-                  {/* Content */}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-gray-700 dark:text-gray-300 line-clamp-2">
                       {block.content}
@@ -182,20 +158,15 @@ export default function FavoritesPage() {
                       <span className="text-xs text-gray-400">
                         {formatDistanceToNow(block.created_at)}
                       </span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => handleUnfavorite(block.id)}
-                          className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
-                        >
-                          <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
-                        </button>
-                        <button
-                          onClick={() => setSelectedBlock(block)}
-                          className="text-indigo-600 dark:text-indigo-400 text-xs"
-                        >
-                          展开
-                        </button>
-                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleUnfavorite(block.id);
+                        }}
+                        className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+                      >
+                        <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -205,7 +176,6 @@ export default function FavoritesPage() {
         )}
       </main>
 
-      {/* Block Detail Modal */}
       <Dialog open={!!selectedBlock} onOpenChange={() => setSelectedBlock(null)}>
         <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
           <DialogHeader>
@@ -227,7 +197,17 @@ export default function FavoritesPage() {
 
           {selectedBlock && (
             <div className="space-y-4">
-              {/* Extracted Content */}
+              {selectedBlock.summary && (
+                <div className="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-xl">
+                  <p className="text-xs text-amber-600 dark:text-amber-400 font-medium mb-2">
+                    一句话总结
+                  </p>
+                  <p className="text-amber-700 dark:text-amber-300">
+                    {selectedBlock.summary}
+                  </p>
+                </div>
+              )}
+
               <div className="p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl">
                 <p className="text-xs text-indigo-600 dark:text-indigo-400 font-medium mb-2">
                   知识碎片
@@ -237,13 +217,12 @@ export default function FavoritesPage() {
                 </p>
               </div>
 
-              {/* Keywords */}
               {selectedBlock.keywords && selectedBlock.keywords.length > 0 && (
                 <div className="flex flex-wrap gap-2">
                   {selectedBlock.keywords.map((kw, idx) => (
                     <span
                       key={idx}
-                      className="px-2 py-1 bg-gray-100 dark:bg-gray-800 rounded text-xs text-gray-600 dark:text-gray-400"
+                      className="px-3 py-1.5 bg-gray-100 dark:bg-gray-800 rounded-full text-sm text-gray-600 dark:text-gray-400"
                     >
                       #{kw}
                     </span>
@@ -251,15 +230,16 @@ export default function FavoritesPage() {
                 </div>
               )}
 
-              {/* Original Content */}
-              <div className="p-4 bg-gray-50 dark:bg-gray-800 rounded-xl">
-                <p className="text-xs text-gray-500 font-medium mb-2">
-                  原始全文
-                </p>
-                <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-                  {selectedBlock.original_content}
-                </p>
-              </div>
+              {selectedBlock.original_content && (
+                <div className="p-4 bg-gray-50 dark:bg-gray-800 rounded-xl">
+                  <p className="text-xs text-gray-500 font-medium mb-2">
+                    原始全文
+                  </p>
+                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                    {selectedBlock.original_content}
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </DialogContent>
