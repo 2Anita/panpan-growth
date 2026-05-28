@@ -24,6 +24,7 @@ interface BlockWithEntry {
   entry_id: string;
   category: string;
   content: string;
+  summary?: string;
   keywords: string[];
   favorite_keywords: string[];
   created_at: string;
@@ -118,8 +119,8 @@ export function ListPageContent() {
   };
 
   // Block-level favorite toggle - only affects THIS specific block
-  const handleToggleBlockFavorite = async (blockId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleToggleBlockFavorite = async (blockId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
 
     // Optimistic UI update - immediately change the star color
     setBlocks(prev =>
@@ -461,7 +462,7 @@ export function ListPageContent() {
         <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span
                   className="px-3 py-1 rounded-full text-sm font-medium"
                   style={{
@@ -476,25 +477,39 @@ export function ListPageContent() {
                 </DialogTitle>
               </div>
               {selectedBlock && (
-                <button
-                  onClick={(e) => handleToggleBlockFavorite(selectedBlock.id, e)}
-                  className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
-                >
-                  <Star
-                    className={`w-5 h-5 ${
-                      selectedBlock.is_favorite
-                        ? 'text-amber-500 fill-amber-500'
-                        : 'text-gray-400'
-                    }`}
-                  />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleToggleBlockFavorite(selectedBlock.id)}
+                    className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
+                  >
+                    <Star
+                      className={`w-5 h-5 ${
+                        selectedBlock.is_favorite
+                          ? 'text-amber-500 fill-amber-500'
+                          : 'text-gray-400'
+                      }`}
+                    />
+                  </button>
+                </div>
               )}
             </div>
           </DialogHeader>
 
           {selectedBlock && (
             <div className="space-y-4">
-              {/* Extracted Content (1句话总结) */}
+              {/* Summary */}
+              {selectedBlock.summary && (
+                <div className="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-xl">
+                  <p className="text-xs text-amber-600 dark:text-amber-400 font-medium mb-2">
+                    一句话总结
+                  </p>
+                  <p className="text-amber-700 dark:text-amber-300 text-base">
+                    {selectedBlock.summary}
+                  </p>
+                </div>
+              )}
+
+              {/* Block Content (短句) */}
               <div className="p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl">
                 <p className="text-xs text-indigo-600 dark:text-indigo-400 font-medium mb-2">
                   知识碎片
@@ -519,14 +534,16 @@ export function ListPageContent() {
               )}
 
               {/* Original Content */}
-              <div className="p-4 bg-gray-50 dark:bg-gray-800 rounded-xl">
-                <p className="text-xs text-gray-500 font-medium mb-2">
-                  原始全文
-                </p>
-                <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-                  {selectedBlock.original_content}
-                </p>
-              </div>
+              {selectedBlock.original_content && (
+                <div className="p-4 bg-gray-50 dark:bg-gray-800 rounded-xl">
+                  <p className="text-xs text-gray-500 font-medium mb-2">
+                    原始全文
+                  </p>
+                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                    {selectedBlock.original_content}
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </DialogContent>

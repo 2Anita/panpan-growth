@@ -1,10 +1,23 @@
 import { ReportPageContent } from '@/components/ReportPageContent';
-import { WeeklyReportContent } from '@/types';
+import { getAuthToken } from '@/lib/supabase/client';
+
+async function fetchReport(token: string, type: 'weekly' | 'monthly') {
+  try {
+    const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ''}/api/report?type=${type}`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+      cache: 'no-store',
+    });
+    if (response.ok) {
+      return await response.json();
+    }
+  } catch (error) {
+    console.error('Failed to fetch report:', error);
+  }
+  return null;
+}
 
 export default async function ReportPage() {
-  // For demo purposes, we'll show empty state since we don't have auth set up yet
-  const weeklyReport: WeeklyReportContent | undefined = undefined;
-  const monthlyReport: WeeklyReportContent | undefined = undefined;
-
-  return <ReportPageContent weeklyReport={weeklyReport} monthlyReport={monthlyReport} />;
+  return <ReportPageContent />;
 }

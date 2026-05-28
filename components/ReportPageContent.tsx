@@ -1,22 +1,64 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { ReportChart } from '@/components/ReportChart';
 import { BottomNav } from '@/components/BottomNav';
-import { TrendingUp, AlertCircle, CheckSquare, Calendar } from 'lucide-react';
-import { WeeklyReportContent, CATEGORY_COLORS } from '@/types';
+import { TrendingUp, AlertCircle, CheckSquare, Calendar, Loader2 } from 'lucide-react';
+import { CATEGORY_COLORS } from '@/types';
+import { getAuthToken } from '@/lib/supabase/client';
 
-interface ReportPageContentProps {
-  weeklyReport?: WeeklyReportContent;
-  monthlyReport?: WeeklyReportContent;
+interface ReportData {
+  period: string;
+  total_records: number;
+  category_distribution: Record<string, number>;
+  top_progress: string[];
+  improvements: string[];
+  todo_summary: string[];
+  generated_at: string;
 }
 
-export function ReportPageContent({ weeklyReport, monthlyReport }: ReportPageContentProps) {
+export function ReportPageContent() {
   const [activeTab, setActiveTab] = useState<'weekly' | 'monthly'>('weekly');
+  const [loading, setLoading] = useState(true);
+  const [weeklyReport, setWeeklyReport] = useState<ReportData | null>(null);
+  const [monthlyReport, setMonthlyReport] = useState<ReportData | null>(null);
+
+  useEffect(() => {
+    fetchReports();
+  }, []);
+
+  const fetchReports = async () => {
+    setLoading(true);
+    const token = await getAuthToken();
+
+    if (token) {
+      try {
+        const [weeklyRes, monthlyRes] = await Promise.all([
+          fetch('/api/report?type=weekly', {
+            headers: { 'Authorization': `Bearer ${token}` }
+          }),
+          fetch('/api/report?type=monthly', {
+            headers: { 'Authorization': `Bearer ${token}` }
+          }),
+        ]);
+
+        if (weeklyRes.ok) {
+          setWeeklyReport(await weeklyRes.json());
+        }
+        if (monthlyRes.ok) {
+          setMonthlyReport(await monthlyRes.json());
+        }
+      } catch (error) {
+        console.error('Failed to fetch reports:', error);
+      }
+    }
+
+    setLoading(false);
+  };
 
   const currentReport = activeTab === 'weekly' ? weeklyReport : monthlyReport;
 
@@ -41,7 +83,9 @@ export function ReportPageContent({ weeklyReport, monthlyReport }: ReportPageCon
           </TabsList>
 
           <TabsContent value="weekly" className="mt-6 space-y-6">
-            {weeklyReport ? (
+            {loading ? (
+              <LoadingState />
+            ) : weeklyReport && weeklyReport.total_records > 0 ? (
               <ReportContent report={weeklyReport} />
             ) : (
               <EmptyState type="weekly" />
@@ -49,7 +93,9 @@ export function ReportPageContent({ weeklyReport, monthlyReport }: ReportPageCon
           </TabsContent>
 
           <TabsContent value="monthly" className="mt-6 space-y-6">
-            {monthlyReport ? (
+            {loading ? (
+              <LoadingState />
+            ) : monthlyReport && monthlyReport.total_records > 0 ? (
               <ReportContent report={monthlyReport} />
             ) : (
               <EmptyState type="monthly" />
@@ -63,13 +109,16 @@ export function ReportPageContent({ weeklyReport, monthlyReport }: ReportPageCon
   );
 }
 
-function ReportContent({ report }: { report: WeeklyReportContent }) {
+function ReportContent({ report }: { report: ReportData }) {
   const categoryData = Object.entries(report.category_distribution || {}).map(
     ([name, value]) => ({
       name,
       value: value as number,
+      color: CATEGORY_COLORS[name] || '#6B7280',
     })
   );
+
+  const total = Object.values(report.category_distribution || {}).reduce((a, b) => a + b, 0) as number;
 
   return (
     <>
@@ -81,7 +130,38 @@ function ReportContent({ report }: { report: WeeklyReportContent }) {
       </div>
 
       {categoryData.length > 0 && (
-        <ReportChart data={categoryData} title="分类分布" />
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base font-medium">分类分布</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {categoryData.map(({ name, value, color }) => (
+              <div key={name} className="space-y-1">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="flex items-center gap-2">
+                    <span
+                      className="w-3 h-3 rounded-full"
+                      style={{ backgroundColor: color }}
+                    />
+                    {name}
+                  </span>
+                  <span className="text-gray-500">
+                    {value} 条 ({total > 0 ? Math.round((value / total) * 100) : 0}%)
+                  </span>
+                </div>
+                <div className="h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all"
+                    style={{
+                      width: `${total > 0 ? (value / total) * 100 : 0}%`,
+                      backgroundColor: color,
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       )}
 
       {report.top_progress && report.top_progress.length > 0 && (
@@ -89,7 +169,7 @@ function ReportContent({ report }: { report: WeeklyReportContent }) {
           <CardHeader className="pb-3">
             <CardTitle className="text-base font-medium flex items-center gap-2">
               <TrendingUp className="w-5 h-5 text-emerald-500" />
-              本周最大进步
+              进步点
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -147,6 +227,17 @@ function ReportContent({ report }: { report: WeeklyReportContent }) {
         </Card>
       )}
     </>
+  );
+}
+
+function LoadingState() {
+  return (
+    <Card>
+      <CardContent className="py-12 text-center">
+        <Loader2 className="w-8 h-8 animate-spin text-indigo-500 mx-auto mb-4" />
+        <p className="text-sm text-gray-500">加载中...</p>
+      </CardContent>
+    </Card>
   );
 }
 

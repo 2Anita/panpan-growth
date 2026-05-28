@@ -7,10 +7,10 @@ const VALID_CATEGORIES = ['创意灵感', '问题解决', '情绪变化', '技�
 // Category keywords for fallback matching
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
   '创意灵感': ['创意', '想法', '灵感', '脑洞', '点子', '创新', '新颖', '有趣', '启发'],
-  '问题解决': ['问题', '解决', '处理', '办法', '困难', '优化', '方案', '调试', '修复'],
-  '情绪变化': ['心情', '感受', '情绪', '开心', '难过', '高兴', '沮丧', '焦虑', '兴奋', '失落'],
-  '技术学习': ['学习', '代码', '编程', '技术', '知识', '教程', '函数', '算法', '语法', '框架'],
-  '行动TODO': ['要做', '计划', '待办', '明天', '准备', '任务', '完成', '执行', '开始', '继续'],
+  '问题解决': ['问题', '解决', '处理', '办法', '困难', '优化', '方案', '调试', '修复', '突破'],
+  '情绪变化': ['心情', '感受', '情绪', '开心', '难过', '高兴', '沮丧', '焦虑', '兴奋', '失落', '平静'],
+  '技术学习': ['学习', '代码', '编程', '技术', '知识', '教程', '函数', '算法', '语法', '框架', '源码'],
+  '行动TODO': ['要做', '计划', '待办', '明天', '准备', '任务', '完成', '执行', '开始', '继续', '跟进'],
   '其他': [],
 };
 
@@ -65,9 +65,36 @@ function matchCategoryByKeyword(text: string): string {
   return maxScore > 0 ? bestMatch : '其他';
 }
 
+// Get user category preferences (for learning)
+async function getUserCategoryPreferences(userId: string): Promise<Record<string, string[]>> {
+  const supabaseAdmin = getSupabaseAdmin();
+  if (!supabaseAdmin) return {};
+
+  try {
+    const { data: adjustments } = await supabaseAdmin
+      .from('category_adjustments')
+      .select('original_category, new_category')
+      .eq('user_id', userId)
+      .limit(100);
+
+    const preferences: Record<string, string[]> = {};
+    adjustments?.forEach(adj => {
+      if (!preferences[adj.original_category]) {
+        preferences[adj.original_category] = [];
+      }
+      if (!preferences[adj.original_category].includes(adj.new_category)) {
+        preferences[adj.original_category].push(adj.new_category);
+      }
+    });
+    return preferences;
+  } catch (error) {
+    console.error('Failed to get user preferences:', error);
+    return {};
+  }
+}
+
 // Split text into sentences
 function splitIntoSentences(text: string): string[] {
-  // Split by Chinese punctuation, English punctuation, or newlines
   const sentences = text
     .replace(/[。！？.!?]+/g, '|')
     .replace(/[\n\r]+/g, '|')
@@ -78,28 +105,33 @@ function splitIntoSentences(text: string): string[] {
 }
 
 // Call DeepSeek AI to split and classify
-async function splitAndClassifyContent(content: string, preferredCategory?: string): Promise<any[] | null> {
+async function splitAndClassifyContent(content: string, preferredCategory?: string, userPreferences?: Record<string, string[]>): Promise<any[] | null> {
   const aiApiKey = process.env.DEEPSEEK_API_KEY;
 
   if (!aiApiKey || aiApiKey.includes('your-') || !aiApiKey.startsWith('sk-')) {
     console.log('DeepSeek API key not configured, using fallback split');
-    // Fallback: split by sentence and classify by keywords
     const sentences = splitIntoSentences(content);
     return sentences.map(sentence => ({
       content: sentence,
       category: preferredCategory || matchCategoryByKeyword(sentence),
       keywords: [],
+      summary: sentence.slice(0, 50),
     }));
   }
 
   try {
-    const systemPrompt = `你是一个精准的个人成长复盘助手。用户会输入一段复盘文字（可能是一段话或多段话），你的任务是：
+    const userPreferenceHint = Object.keys(userPreferences || {}).length > 0
+      ? `\n【用户偏好】AI已学习到以下分类习惯：${JSON.stringify(userPreferences)}`
+      : '';
+
+    const systemPrompt = `你是一个精准的个人成长复盘助手。用户会输入一段复盘文字，你的任务是：
 
 1. 把这段文字拆分成独立的短句（每句完整表达一个意思）
 2. 给每个短句打上分类标签
-3. 提取每个短句的关键词
+3. 提取每个短句的3个核心关键词
+4. 生成1句话总结
 
-【分类标签】（必须严格使用这些名称，只能选一个）：
+【分类标签】：
 - 创意灵感：想法、创意、灵感、脑洞等
 - 问题解决：问题、解决、办法、方案等
 - 情绪变化：心情、感受、情绪、开心、难过等
@@ -108,22 +140,23 @@ async function splitAndClassifyContent(content: string, preferredCategory?: stri
 - 其他：以上都不是
 
 ${preferredCategory ? `【重要】用户选择了"${preferredCategory}"分类，优先使用该分类。` : ''}
+${userPreferenceHint}
 
 【返回格式】（必须是JSON数组，不要返回任何其他内容）：
 [
   {
     "content": "独立的短句内容（保留用户原话，不要总结）",
     "category": "分类名称",
-    "keywords": ["关键词1", "关键词2"]
+    "keywords": ["关键词1", "关键词2", "关键词3"],
+    "summary": "一句话总结"
   }
 ]
 
 【注意】：
-- content必须保留用户原话，不要改写或总结
+- content必须保留用户原话
 - 每句独立一行，语义完整
 - 如果原句太短（少于5个字），跳过
-- 如果原句太长（超过200字），拆分成短句
-- category必须是6个分类之一`;
+- summary不要超过20个字`;
 
     const response = await fetch('https://api.deepseek.com/chat/completions', {
       method: 'POST',
@@ -138,7 +171,7 @@ ${preferredCategory ? `【重要】用户选择了"${preferredCategory}"分类�
           { role: 'user', content: content }
         ],
         temperature: 0.2,
-        max_tokens: 2000,
+        max_tokens: 3000,
       }),
     });
 
@@ -153,7 +186,6 @@ ${preferredCategory ? `【重要】用户选择了"${preferredCategory}"分类�
 
     console.log('DeepSeek raw response:', aiContent);
 
-    // Parse JSON from response
     let parsed = null;
     try {
       const jsonMatch = aiContent.match(/\[[\s\S]*\]/);
@@ -165,12 +197,10 @@ ${preferredCategory ? `【重要】用户选择了"${preferredCategory}"分类�
     }
 
     if (Array.isArray(parsed) && parsed.length > 0) {
-      // Validate and normalize each block
       const validBlocks = parsed.filter((block: any) =>
         block.content && block.content.trim().length > 0
       ).map((block: any) => {
         let category = block.category || '其他';
-        // Validate category
         if (!VALID_CATEGORIES.includes(category)) {
           category = matchCategoryByKeyword(block.content);
         }
@@ -178,6 +208,7 @@ ${preferredCategory ? `【重要】用户选择了"${preferredCategory}"分类�
           content: block.content.trim(),
           category,
           keywords: Array.isArray(block.keywords) ? block.keywords.slice(0, 3) : [],
+          summary: (block.summary || block.content || '').slice(0, 50),
         };
       });
 
@@ -209,11 +240,13 @@ export async function POST(request: NextRequest) {
     const userId = user?.id || 'anonymous';
     const now = new Date().toISOString();
 
+    // Get user preferences for learning
+    const userPreferences = user ? await getUserCategoryPreferences(user.id) : undefined;
+
     // Split and classify using DeepSeek AI
-    let blocksData = await splitAndClassifyContent(content, preferredCategory);
+    let blocksData = await splitAndClassifyContent(content, preferredCategory, userPreferences);
 
     if (!blocksData || blocksData.length === 0) {
-      // Fallback: split locally and classify by keywords
       const sentences = splitIntoSentences(content);
       if (sentences.length === 0) {
         return NextResponse.json({ error: 'Could not parse content' }, { status: 400 });
@@ -222,6 +255,7 @@ export async function POST(request: NextRequest) {
         content: sentence,
         category: preferredCategory || matchCategoryByKeyword(sentence),
         keywords: [],
+        summary: sentence.slice(0, 50),
       }));
     }
 
@@ -229,13 +263,13 @@ export async function POST(request: NextRequest) {
 
     // Create record (entry)
     const recordId = crypto.randomUUID();
-    const summary = blocksData.map(b => b.content).join('；').slice(0, 100);
+    const summary = blocksData.map(b => b.summary || b.content).join('；').slice(0, 200);
     const categories = [...new Set(blocksData.map(b => b.category))];
 
     const record = {
       id: recordId,
       user_id: userId,
-      content, // Store full original text
+      content,
       content_type,
       summary,
       keywords: blocksData.flatMap(b => b.keywords || []).slice(0, 10),
@@ -251,7 +285,8 @@ export async function POST(request: NextRequest) {
       user_id: userId,
       entry_id: recordId,
       category: data.category,
-      content: data.content, // Store original sentence as content
+      content: data.content,
+      summary: data.summary || data.content.slice(0, 50),
       keywords: data.keywords || [],
       favorite_keywords: [],
       is_manual: false,
@@ -292,6 +327,7 @@ export async function POST(request: NextRequest) {
               entry_id: block.entry_id,
               category: block.category,
               content: block.content,
+              summary: block.summary,
               keywords: block.keywords,
               favorite_keywords: [],
               is_manual: false,
@@ -330,6 +366,7 @@ export async function GET(request: NextRequest) {
     const category = searchParams.get('category');
     const searchQuery = searchParams.get('q');
     const timeFilter = searchParams.get('time');
+    const entryId = searchParams.get('entry_id');
 
     const user = await getUser(request);
     const isLoggedIn = !!user;
@@ -341,10 +378,14 @@ export async function GET(request: NextRequest) {
         try {
           let query = supabaseAdmin
             .from('content_blocks')
-            .select('*')
+            .select('*, records!inner(id, content, summary, keywords, categories)')
             .eq('user_id', user.id)
             .order('created_at', { ascending: false })
             .limit(limit);
+
+          if (entryId) {
+            query = query.eq('entry_id', entryId);
+          }
 
           if (category) {
             query = query.eq('category', category);
@@ -376,19 +417,20 @@ export async function GET(request: NextRequest) {
           const { data: blocks, error } = await query;
 
           if (!error && blocks && blocks.length > 0) {
-            // Get original content from records
-            const entryIds = [...new Set(blocks.map(b => b.entry_id))];
-            const { data: records } = await supabaseAdmin
-              .from('records')
-              .select('id, content')
-              .in('id', entryIds);
-
-            const recordMap: Record<string, string> = {};
-            records?.forEach(r => { recordMap[r.id] = r.content; });
-
-            const blocksWithOriginal = blocks.map(b => ({
-              ...b,
-              original_content: recordMap[b.entry_id] || '',
+            const blocksWithOriginal = blocks.map((b: any) => ({
+              id: b.id,
+              entry_id: b.entry_id,
+              category: b.category,
+              content: b.content,
+              summary: b.summary,
+              keywords: b.keywords || [],
+              favorite_keywords: b.favorite_keywords || [],
+              is_favorite: b.is_favorite,
+              created_at: b.created_at,
+              original_content: b.records?.content || '',
+              record_summary: b.records?.summary || '',
+              record_keywords: b.records?.keywords || [],
+              record_categories: b.records?.categories || [],
             }));
 
             return NextResponse.json(blocksWithOriginal);
@@ -401,6 +443,10 @@ export async function GET(request: NextRequest) {
 
     // Fallback to in-memory
     let filteredBlocks = [...inMemoryBlocks];
+
+    if (entryId) {
+      filteredBlocks = filteredBlocks.filter(b => b.entry_id === entryId);
+    }
 
     if (category) {
       filteredBlocks = filteredBlocks.filter(b => b.category === category);
@@ -442,6 +488,9 @@ export async function GET(request: NextRequest) {
       return {
         ...block,
         original_content: entry?.content || '',
+        record_summary: entry?.summary || '',
+        record_keywords: entry?.keywords || [],
+        record_categories: entry?.categories || [],
       };
     });
 
@@ -454,16 +503,50 @@ export async function GET(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
-    const { block_id, keyword, is_favorite } = await request.json();
+    const { block_id, keyword, is_favorite, category } = await request.json();
 
     if (!block_id) {
       return NextResponse.json({ error: 'block_id is required' }, { status: 400 });
     }
 
+    const user = await getUser(request);
     const supabaseAdmin = getSupabaseAdmin();
 
-    if (supabaseAdmin) {
+    if (supabaseAdmin && user) {
       try {
+        // Handle category adjustment
+        if (category) {
+          // Get original block to find its current category
+          const { data: block } = await supabaseAdmin
+            .from('content_blocks')
+            .select('category, user_id')
+            .eq('id', block_id)
+            .single();
+
+          if (block) {
+            // Update block category
+            await supabaseAdmin
+              .from('content_blocks')
+              .update({ category, updated_at: new Date().toISOString() })
+              .eq('id', block_id);
+
+            // Record adjustment for learning
+            if (block.category !== category) {
+              await supabaseAdmin
+                .from('category_adjustments')
+                .insert({
+                  user_id: user.id,
+                  block_id,
+                  original_category: block.category,
+                  new_category: category,
+                });
+            }
+
+            return NextResponse.json({ id: block_id, category });
+          }
+        }
+
+        // Handle keyword favorite toggle
         if (keyword) {
           const { data: block } = await supabaseAdmin
             .from('content_blocks')
@@ -486,14 +569,15 @@ export async function PATCH(request: NextRequest) {
 
             return NextResponse.json({ id: block_id, favorite_keywords: favoriteKeywords });
           }
-        } else {
-          await supabaseAdmin
-            .from('content_blocks')
-            .update({ is_favorite })
-            .eq('id', block_id);
-
-          return NextResponse.json({ id: block_id, is_favorite });
         }
+
+        // Handle block favorite toggle
+        await supabaseAdmin
+          .from('content_blocks')
+          .update({ is_favorite })
+          .eq('id', block_id);
+
+        return NextResponse.json({ id: block_id, is_favorite });
       } catch (error) {
         console.error('Supabase PATCH error:', error);
       }
@@ -503,6 +587,11 @@ export async function PATCH(request: NextRequest) {
     const blockIndex = inMemoryBlocks.findIndex(b => b.id === block_id);
     if (blockIndex === -1) {
       return NextResponse.json({ error: 'Block not found' }, { status: 404 });
+    }
+
+    if (category) {
+      inMemoryBlocks[blockIndex].category = category;
+      return NextResponse.json(inMemoryBlocks[blockIndex]);
     }
 
     if (keyword) {
