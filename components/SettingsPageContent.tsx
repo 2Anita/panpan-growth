@@ -131,7 +131,7 @@ export function SettingsPageContent() {
     }
   };
 
-  const handleWeChatLogin = async () => {
+  const handleGoogleLogin = async () => {
     try {
       if (!supabase) {
         toast.error('系统未配置');
@@ -142,6 +142,7 @@ export function SettingsPageContent() {
         provider: 'google',
         options: {
           redirectTo: `${window.location.origin}/api/auth/callback`,
+          scopes: 'email profile',
         }
       });
 
@@ -564,10 +565,10 @@ export function SettingsPageContent() {
             <Button
               type="button"
               variant="outline"
-              onClick={handleWeChatLogin}
+              onClick={handleGoogleLogin}
               className="w-full"
             >
-              微信登录
+              第三方登录
             </Button>
             <button
               type="button"

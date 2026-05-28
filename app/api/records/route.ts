@@ -8,6 +8,7 @@ const VALID_CATEGORIES: Record<string, string> = {
   '问题解决': '问题解决',
   '情绪变化': '情绪变化',
   '技术学习': '技术学习',
+  '内心感受': '内心感受',
   '行动TODO': '行动TODO',
   '其他': '其他',
 };
@@ -90,7 +91,7 @@ export async function POST(request: NextRequest) {
 
     // Build category list for AI
     const categoryList = DEFAULT_CATEGORIES.map((c: any) =>
-      `${c.name}（关键词：${c.keywords?.join(',') || ''}）`
+      `${c.icon} ${c.name}`
     ).join('\n');
 
     // Build preferred category instruction
@@ -119,7 +120,7 @@ export async function POST(request: NextRequest) {
                 content: `你是一个精准的知识拆解专家。用户会输入一段乱序的复盘文字。
 
 你的任务是：
-1. 根据用户的[自定义分类列表]，将输入内容拆解为多个独立的"知识碎片"。
+1. 根据用户的[分类列表]，将输入内容拆解为多个独立的"知识碎片"。
 2. 每个碎片必须：
    - 彻底脱离上下文也能读懂（AI需微调语义，补全主语，保持语言通顺）。
    - 极其精炼，只保留干货，删除所有冗余描述（背景、重复、客套话等）。
@@ -127,8 +128,14 @@ export async function POST(request: NextRequest) {
 3. 如果输入内容包含"内心感受"，请只提取表达情绪和感悟的部分。
 4. 保持语言自然流畅，不要生硬翻译。${preferredCategoryInstruction}
 
-[自定义分类列表]
-${categoryList}
+[分类列表 - 必须使用这些精确的分类名称]
+💡 创意灵感
+🔧 问题解决
+💗 情绪变化
+📚 技术学习
+✨ 内心感受
+✅ 行动TODO
+📝 其他
 
 返回格式（JSON数组）：
 [
@@ -142,8 +149,9 @@ ${categoryList}
 注意：
 - 只返回JSON数组，不要有任何其他文字。
 - 每个碎片必须是独立的，能脱离原文就读懂。
-- category必须与列表中的分类名称完全一致。
-- content要自然通顺，不要机器翻译腔。`,
+- category必须与列表中的分类名称完全一致，不能自己发明分类名。
+- content要自然通顺，不要机器翻译腔。
+- 如果内容不属于任何特定分类，才使用"其他"。`,
               },
               {
                 role: 'user',
