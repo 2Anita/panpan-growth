@@ -1,31 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { DEFAULT_CATEGORIES } from '@/types';
 
-// Valid categories mapping - strict mapping
-const VALID_CATEGORIES: Record<string, string> = {
-  '创意灵感': '创意灵感',
-  '问题解决': '问题解决',
-  '情绪变化': '情绪变化',
-  '技术学习': '技术学习',
-  '内心感受': '内心感受',
-  '行动TODO': '行动TODO',
-  '其他': '其他',
+// Valid categories - MUST match exactly
+const VALID_CATEGORIES = ['创意灵感', '问题解决', '情绪变化', '技术学习', '内心感受', '行动TODO', '其他'];
+
+// Category keywords for fallback matching
+const CATEGORY_KEYWORDS: Record<string, string[]> = {
+  '创意灵感': ['创意', '想法', '灵感', '脑洞', '点子', '创新', '新颖', '有趣'],
+  '问题解决': ['问题', '解决', '处理', '办法', '困难', '优化', '方案', '调试'],
+  '情绪变化': ['心情', '感受', '情绪', '开心', '难过', '高兴', '沮丧', '焦虑'],
+  '技术学习': ['学习', '代码', '编程', '技术', '知识', '教程', '函数', '算法'],
+  '行动TODO': ['要做', '计划', '待办', '明天', '准备', '任务', '完成', '执行'],
+  '内心感受': ['内心', '体会', '感悟', '体会', '领悟', '感受'],
 };
 
-// Normalize category name to valid category
-function normalizeCategory(cat: string): string {
-  return VALID_CATEGORIES[cat] || '其他';
-}
-
-// Create Supabase clients
+// Create Supabase client
 function createSupabaseClient(supabaseUrl: string, supabaseKey: string) {
   return createClient(supabaseUrl, supabaseKey, {
     auth: { autoRefreshToken: false, persistSession: false }
   });
 }
 
-// Get Supabase admin client (service role key bypasses RLS)
+// Get Supabase admin client
 function getSupabaseAdmin() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -33,47 +29,127 @@ function getSupabaseAdmin() {
   return createSupabaseClient(supabaseUrl, supabaseServiceKey);
 }
 
-// Get Supabase anon client
-function getSupabaseAnon() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !supabaseAnonKey) return null;
-  return createSupabaseClient(supabaseUrl, supabaseAnonKey);
-}
-
 // Get user from request
 async function getUser(request: NextRequest) {
   const supabaseAdmin = getSupabaseAdmin();
   if (!supabaseAdmin) return null;
 
-  // Try to get token from Authorization header (Bearer token)
   const authHeader = request.headers.get('Authorization');
-  if (authHeader) {
-    const token = authHeader.replace('Bearer ', '');
-    const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
-    if (!error && user) return user;
-  }
+  if (!authHeader) return null;
 
-  // Try to get token from cookie (Supabase session cookie)
-  const cookieHeader = request.headers.get('cookie');
-  if (cookieHeader) {
-    const cookies = Object.fromEntries(
-      cookieHeader.split('; ').map(c => {
-        const [key, ...val] = c.split('=');
-        return [key, val.join('=')];
-      })
-    );
-    const supabaseToken = cookies['sb-access-token'] || cookies['supabase-auth-token'];
-    if (supabaseToken) {
-      const { data: { user }, error } = await supabaseAdmin.auth.getUser(supabaseToken);
-      if (!error && user) return user;
-    }
-  }
-
-  return null;
+  const token = authHeader.replace('Bearer ', '');
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !user) return null;
+  return user;
 }
 
-// In-memory stores for local/demo mode
+// Match category by keywords
+function matchCategoryByKeyword(text: string): string {
+  const lowerText = text.toLowerCase();
+
+  for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
+    for (const keyword of keywords) {
+      if (lowerText.includes(keyword)) {
+        return category;
+      }
+    }
+  }
+  return '其他';
+}
+
+// Call DeepSeek AI
+async function callDeepSeekAI(content: string, preferredCategory?: string): Promise<any> {
+  const aiApiKey = process.env.DEEPSEEK_API_KEY;
+
+  if (!aiApiKey || aiApiKey.includes('your-') || !aiApiKey.startsWith('sk-')) {
+    console.log('DeepSeek API key not configured or invalid');
+    return null;
+  }
+
+  try {
+    const systemPrompt = `你是一个精准的个人成长复盘助手。用户会输入一段文字，你的任务是：
+
+1. 提取文字中的核心内容（1-3句话）
+2. 提取3-5个关键词
+3. 判断最合适的分类
+
+分类列表（必须严格使用这些名称）：
+- 创意灵感：想法、创意、灵感、脑洞
+- 问题解决：问题、解决、办法、方案
+- 情绪变化：心情、感受、情绪、开心、难过
+- 技术学习：学习、代码、编程、技术、知识
+- 行动TODO：要做、计划、待办、任务
+- 其他：以上都不是
+
+${preferredCategory ? `【重要】用户选择了"${preferredCategory}"分类，请优先使用该分类。` : ''}
+
+必须返回以下JSON格式（不要返回任何其他内容）：
+{
+  "summary": "核心内容摘要（1-3句话）",
+  "keywords": ["关键词1", "关键词2", "关键词3"],
+  "category": "分类名称",
+  "todos": ["待办事项（如有）"]
+}`;
+
+    const response = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${aiApiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: content }
+        ],
+        temperature: 0.3,
+        max_tokens: 500,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('DeepSeek API error:', response.status, errorText);
+      return null;
+    }
+
+    const data = await response.json();
+    const aiContent = data.choices?.[0]?.message?.content || '';
+
+    console.log('DeepSeek raw response:', aiContent);
+
+    // Parse JSON from response
+    let parsed = null;
+    try {
+      // Try to extract JSON from the response
+      const jsonMatch = aiContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      }
+    } catch (parseError) {
+      console.error('JSON parse error:', parseError);
+    }
+
+    if (parsed && parsed.category && VALID_CATEGORIES.includes(parsed.category)) {
+      return parsed;
+    }
+
+    // If category is invalid, try to fix it
+    if (parsed && parsed.category) {
+      const normalizedCategory = matchCategoryByKeyword(parsed.category);
+      parsed.category = normalizedCategory;
+      return parsed;
+    }
+
+    return null;
+  } catch (error) {
+    console.error('DeepSeek API call error:', error);
+    return null;
+  }
+}
+
+// In-memory stores
 const inMemoryRecords: any[] = [];
 const inMemoryBlocks: any[] = [];
 
@@ -89,132 +165,30 @@ export async function POST(request: NextRequest) {
     const userId = user?.id || 'anonymous';
     const now = new Date().toISOString();
 
-    // Build category list for AI
-    const categoryList = DEFAULT_CATEGORIES.map((c: any) =>
-      `${c.icon} ${c.name}`
-    ).join('\n');
+    // Try DeepSeek AI first
+    const aiResult = await callDeepSeekAI(content, preferredCategory);
 
-    // Build preferred category instruction
-    let preferredCategoryInstruction = '';
-    if (preferredCategory) {
-      preferredCategoryInstruction = `\n\n【重要】用户选择了优先分类"${preferredCategory}"，请务必将内容优先归类到该分类，除非内容明显不属于该分类。`;
-    }
+    let summary = '';
+    let keywords: string[] = [];
+    let category = '其他';
 
-    // Call DeepSeek API
-    let blocks: any[] = [];
-    const aiApiKey = process.env.DEEPSEEK_API_KEY;
+    if (aiResult) {
+      summary = aiResult.summary || content.slice(0, 100);
+      keywords = Array.isArray(aiResult.keywords) ? aiResult.keywords.slice(0, 5) : [];
+      category = aiResult.category || '其他';
 
-    if (aiApiKey && !aiApiKey.includes('your-')) {
-      try {
-        const deepseekResponse = await fetch('https://api.deepseek.com/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${aiApiKey}`,
-          },
-          body: JSON.stringify({
-            model: 'deepseek-chat',
-            messages: [
-              {
-                role: 'system',
-                content: `你是一个精准的知识拆解专家。用户会输入一段乱序的复盘文字。
-
-你的任务是：
-1. 根据用户的[分类列表]，将输入内容拆解为多个独立的"知识碎片"。
-2. 每个碎片必须：
-   - 彻底脱离上下文也能读懂（AI需微调语义，补全主语，保持语言通顺）。
-   - 极其精炼，只保留干货，删除所有冗余描述（背景、重复、客套话等）。
-   - 准确归类到最合适的分类。
-3. 如果输入内容包含"内心感受"，请只提取表达情绪和感悟的部分。
-4. 保持语言自然流畅，不要生硬翻译。${preferredCategoryInstruction}
-
-[分类列表 - 必须使用这些精确的分类名称]
-💡 创意灵感
-🔧 问题解决
-💗 情绪变化
-📚 技术学习
-✨ 内心感受
-✅ 行动TODO
-📝 其他
-
-返回格式（JSON数组）：
-[
-  {
-    "category": "分类名称（必须与列表中的名称完全一致）",
-    "content": "该碎片的精华内容（1-3句话，必须独立可读，不依赖任何上下文）",
-    "keywords": ["关键词1", "关键词2", "关键词3"]
-  }
-]
-
-注意：
-- 只返回JSON数组，不要有任何其他文字。
-- 每个碎片必须是独立的，能脱离原文就读懂。
-- category必须与列表中的分类名称完全一致，不能自己发明分类名。
-- content要自然通顺，不要机器翻译腔。
-- 如果内容不属于任何特定分类，才使用"其他"。`,
-              },
-              {
-                role: 'user',
-                content: content,
-              },
-            ],
-            temperature: 0.7,
-            max_tokens: 1000,
-          }),
-        });
-
-        if (deepseekResponse.ok) {
-          const deepseekData = await deepseekResponse.json();
-          const aiContent = deepseekData.choices?.[0]?.message?.content || '';
-
-          try {
-            let parsed = JSON.parse(aiContent);
-            if (!Array.isArray(parsed) && parsed.blocks) {
-              parsed = parsed.blocks;
-            }
-
-            if (Array.isArray(parsed)) {
-              blocks = parsed.map((block: any) => ({
-                category: normalizeCategory(block.category),
-                content: block.content || '',
-                keywords: Array.isArray(block.keywords) ? block.keywords.slice(0, 5) : [],
-              }));
-            }
-          } catch (parseError) {
-            console.log('Failed to parse AI response, trying fallback');
-            const jsonMatch = aiContent.match(/\[[\s\S]*\]/);
-            if (jsonMatch) {
-              try {
-                const parsed = JSON.parse(jsonMatch[0]);
-                if (Array.isArray(parsed)) {
-                  blocks = parsed.map((block: any) => ({
-                    category: normalizeCategory(block.category),
-                    content: block.content || '',
-                    keywords: Array.isArray(block.keywords) ? block.keywords.slice(0, 5) : [],
-                  }));
-                }
-              } catch {
-                console.log('Failed to extract JSON');
-              }
-            }
-          }
-        }
-      } catch (aiError) {
-        console.error('AI API error:', aiError);
+      // Validate category
+      if (!VALID_CATEGORIES.includes(category)) {
+        category = matchCategoryByKeyword(content);
       }
+    } else {
+      // Fallback: use keyword matching
+      summary = content.slice(0, 100);
+      keywords = [];
+      category = preferredCategory || matchCategoryByKeyword(content);
     }
 
-    // Fallback if no blocks generated
-    if (blocks.length === 0) {
-      blocks = [{
-        category: normalizeCategory(preferredCategory || '其他'),
-        content: content.slice(0, 200),
-        keywords: [],
-      }];
-    }
-
-    // Generate summary
-    const summary = blocks.map(b => b.content).join('；').slice(0, 100);
+    console.log('AI classification result:', { category, summary, keywords });
 
     // Create record
     const recordId = crypto.randomUUID();
@@ -224,32 +198,35 @@ export async function POST(request: NextRequest) {
       content,
       content_type,
       summary,
-      keywords: blocks.flatMap(b => b.keywords || []),
-      categories: blocks.map(b => b.category),
-      todos: [],
+      keywords,
+      categories: [category],
+      todos: aiResult?.todos || [],
       created_at: now,
       updated_at: now,
       is_favorite: false,
-      blocks: blocks.map((b: any, i: number) => ({
-        id: crypto.randomUUID(),
-        user_id: userId,
-        entry_id: recordId,
-        category: b.category,
-        content: b.content,
-        keywords: b.keywords || [],
-        favorite_keywords: [],
-        is_manual: false,
-        is_favorite: false,
-        created_at: now,
-        updated_at: now,
-      })),
     };
 
-    // Try to save to Supabase
+    // Create block
+    const blockId = crypto.randomUUID();
+    const block = {
+      id: blockId,
+      user_id: userId,
+      entry_id: recordId,
+      category,
+      content: summary,
+      keywords,
+      favorite_keywords: [],
+      is_manual: false,
+      is_favorite: false,
+      created_at: now,
+      updated_at: now,
+    };
+
+    // Save to Supabase
     const supabaseAdmin = getSupabaseAdmin();
     if (supabaseAdmin) {
       try {
-        // Save to records table
+        // Save record
         const { error: recordError } = await supabaseAdmin
           .from('records')
           .insert({
@@ -258,44 +235,48 @@ export async function POST(request: NextRequest) {
             content: record.content,
             content_type: record.content_type,
             summary: record.summary,
+            keywords: record.keywords,
             categories: record.categories,
             is_favorite: false,
           });
 
         if (recordError) {
-          console.error('Failed to save record to Supabase:', recordError);
-        } else {
-          // Save blocks to content_blocks table (NOT blocks!)
-          for (const block of record.blocks) {
-            const { error: blockError } = await supabaseAdmin
-              .from('content_blocks')
-              .insert({
-                id: block.id,
-                user_id: block.user_id,
-                entry_id: block.entry_id,
-                category: block.category,
-                content: block.content,
-                keywords: block.keywords,
-                favorite_keywords: [],
-                is_manual: false,
-                is_favorite: false,
-              });
-
-            if (blockError) {
-              console.error('Failed to save block to Supabase:', blockError);
-            }
-          }
+          console.error('Record insert error:', recordError);
         }
+
+        // Save block
+        const { error: blockError } = await supabaseAdmin
+          .from('content_blocks')
+          .insert({
+            id: block.id,
+            user_id: block.user_id,
+            entry_id: block.entry_id,
+            category: block.category,
+            content: block.content,
+            keywords: block.keywords,
+            favorite_keywords: [],
+            is_manual: false,
+            is_favorite: false,
+          });
+
+        if (blockError) {
+          console.error('Block insert error:', blockError);
+        }
+
+        console.log('Saved to Supabase:', { recordId, blockId, category });
       } catch (dbError) {
         console.error('Database error:', dbError);
       }
     }
 
-    // Always also store in memory for local access
+    // Store in memory
     inMemoryRecords.unshift(record);
-    record.blocks.forEach((block: any) => inMemoryBlocks.unshift(block));
+    inMemoryBlocks.unshift(block);
 
-    return NextResponse.json(record);
+    return NextResponse.json({
+      ...record,
+      blocks: [block],
+    });
   } catch (error) {
     console.error('Error saving record:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -308,20 +289,19 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '50');
     const category = searchParams.get('category');
     const searchQuery = searchParams.get('q');
-    const blocksOnly = searchParams.get('blocks_only') === 'true';
     const timeFilter = searchParams.get('time');
 
     const user = await getUser(request);
     const isLoggedIn = !!user;
 
-    // Try Supabase first if logged in
+    // Try Supabase first
     if (isLoggedIn) {
       const supabaseAdmin = getSupabaseAdmin();
       if (supabaseAdmin) {
         try {
           let query = supabaseAdmin
             .from('content_blocks')
-            .select('*, records(content)')
+            .select('*')
             .eq('user_id', user.id)
             .order('created_at', { ascending: false })
             .limit(limit);
@@ -353,10 +333,25 @@ export async function GET(request: NextRequest) {
             query = query.or(`content.ilike.%${searchQuery}%,keywords.ilike.%${searchQuery}%`);
           }
 
-          const { data: contentBlocks, error } = await query;
+          const { data: blocks, error } = await query;
 
-          if (!error && contentBlocks) {
-            return NextResponse.json(contentBlocks);
+          if (!error && blocks && blocks.length > 0) {
+            // Get original content from records
+            const entryIds = [...new Set(blocks.map(b => b.entry_id))];
+            const { data: records } = await supabaseAdmin
+              .from('records')
+              .select('id, content')
+              .in('id', entryIds);
+
+            const recordMap: Record<string, string> = {};
+            records?.forEach(r => { recordMap[r.id] = r.content; });
+
+            const blocksWithOriginal = blocks.map(b => ({
+              ...b,
+              original_content: recordMap[b.entry_id] || '',
+            }));
+
+            return NextResponse.json(blocksWithOriginal);
           }
         } catch (error) {
           console.error('Supabase query error:', error);
@@ -364,15 +359,13 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Fallback to in-memory storage
+    // Fallback to in-memory
     let filteredBlocks = [...inMemoryBlocks];
 
-    // Filter by category
     if (category) {
       filteredBlocks = filteredBlocks.filter(b => b.category === category);
     }
 
-    // Filter by search query
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       filteredBlocks = filteredBlocks.filter(b =>
@@ -381,7 +374,6 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Filter by time
     if (timeFilter && timeFilter !== 'all') {
       const now = new Date();
       let startDate: Date;
@@ -401,12 +393,10 @@ export async function GET(request: NextRequest) {
       filteredBlocks = filteredBlocks.filter(b => new Date(b.created_at) >= startDate);
     }
 
-    // Sort by created_at desc
     filteredBlocks.sort((a, b) =>
       new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
 
-    // Add original content
     const blocksWithOriginal = filteredBlocks.slice(0, limit).map(block => {
       const entry = inMemoryRecords.find(r => r.id === block.entry_id);
       return {
@@ -430,12 +420,11 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'block_id is required' }, { status: 400 });
     }
 
-    // Try Supabase first
     const supabaseAdmin = getSupabaseAdmin();
+
     if (supabaseAdmin) {
       try {
         if (keyword) {
-          // Keyword favorite toggle
           const { data: block } = await supabaseAdmin
             .from('content_blocks')
             .select('favorite_keywords')
@@ -452,16 +441,15 @@ export async function PATCH(request: NextRequest) {
 
             await supabaseAdmin
               .from('content_blocks')
-              .update({ favorite_keywords: favoriteKeywords, updated_at: new Date().toISOString() })
+              .update({ favorite_keywords: favoriteKeywords })
               .eq('id', block_id);
 
             return NextResponse.json({ id: block_id, favorite_keywords: favoriteKeywords });
           }
         } else {
-          // Block favorite toggle
           await supabaseAdmin
             .from('content_blocks')
-            .update({ is_favorite, updated_at: new Date().toISOString() })
+            .update({ is_favorite })
             .eq('id', block_id);
 
           return NextResponse.json({ id: block_id, is_favorite });
@@ -477,35 +465,18 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'Block not found' }, { status: 404 });
     }
 
-    // Handle keyword favorite toggle
     if (keyword) {
-      const favoriteKeywords = inMemoryBlocks[blockIndex].favorite_keywords || [];
-
+      let favoriteKeywords = inMemoryBlocks[blockIndex].favorite_keywords || [];
       if (is_favorite === true && !favoriteKeywords.includes(keyword)) {
         favoriteKeywords.push(keyword);
       } else if (is_favorite === false) {
-        const idx = favoriteKeywords.indexOf(keyword);
-        if (idx > -1) favoriteKeywords.splice(idx, 1);
+        favoriteKeywords = favoriteKeywords.filter((k: string) => k !== keyword);
       }
-
-      inMemoryBlocks[blockIndex] = {
-        ...inMemoryBlocks[blockIndex],
-        favorite_keywords: favoriteKeywords,
-        updated_at: new Date().toISOString(),
-      };
-
+      inMemoryBlocks[blockIndex].favorite_keywords = favoriteKeywords;
       return NextResponse.json(inMemoryBlocks[blockIndex]);
     }
 
-    // Handle block favorite toggle
-    const newFavoriteState = is_favorite !== undefined ? is_favorite : !inMemoryBlocks[blockIndex].is_favorite;
-
-    inMemoryBlocks[blockIndex] = {
-      ...inMemoryBlocks[blockIndex],
-      is_favorite: newFavoriteState,
-      updated_at: new Date().toISOString(),
-    };
-
+    inMemoryBlocks[blockIndex].is_favorite = is_favorite;
     return NextResponse.json(inMemoryBlocks[blockIndex]);
   } catch (error) {
     console.error('Error updating block:', error);
