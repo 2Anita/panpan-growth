@@ -35,36 +35,60 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'block_id is required' }, { status: 400 });
     }
 
-    const user = await getUser(request);
     const supabaseAdmin = getSupabaseAdmin();
 
     // Handle keyword favorite toggle
     if (keyword !== undefined) {
       if (supabaseAdmin) {
-        const { data: block } = await supabaseAdmin
-          .from('content_blocks')
-          .select('favorite_keywords')
-          .eq('id', block_id)
-          .single();
-
-        if (block) {
-          let favoriteKeywords = block.favorite_keywords || [];
-          if (is_favorite === true && !favoriteKeywords.includes(keyword)) {
-            favoriteKeywords.push(keyword);
-          } else if (is_favorite === false) {
-            favoriteKeywords = favoriteKeywords.filter((k: string) => k !== keyword);
-          }
-
-          await supabaseAdmin
+        // Try content_blocks
+        try {
+          const { data: block } = await supabaseAdmin
             .from('content_blocks')
-            .update({ favorite_keywords: favoriteKeywords, updated_at: new Date().toISOString() })
-            .eq('id', block_id);
+            .select('favorite_keywords')
+            .eq('id', block_id)
+            .single();
 
-          return NextResponse.json({ id: block_id, favorite_keywords: favoriteKeywords });
-        }
+          if (block) {
+            let favoriteKeywords = block.favorite_keywords || [];
+            if (is_favorite === true && !favoriteKeywords.includes(keyword)) {
+              favoriteKeywords.push(keyword);
+            } else if (is_favorite === false) {
+              favoriteKeywords = favoriteKeywords.filter((k: string) => k !== keyword);
+            }
+
+            await supabaseAdmin
+              .from('content_blocks')
+              .update({ favorite_keywords: favoriteKeywords })
+              .eq('id', block_id);
+
+            return NextResponse.json({ id: block_id, favorite_keywords: favoriteKeywords });
+          }
+        } catch (e) {}
+
+        // Try entries
+        try {
+          const { data: entry } = await supabaseAdmin
+            .from('entries')
+            .select('tags')
+            .eq('id', block_id)
+            .single();
+
+          if (entry) {
+            const tags = entry.tags || [];
+            const newTags = is_favorite === true && !tags.includes(keyword)
+              ? [...tags, keyword]
+              : tags.filter((k: string) => k !== keyword);
+
+            await supabaseAdmin
+              .from('entries')
+              .update({ tags: newTags })
+              .eq('id', block_id);
+
+            return NextResponse.json({ id: block_id, favorite_keywords: newTags });
+          }
+        } catch (e) {}
       }
 
-      // Fallback to in-memory
       const blockIndex = inMemoryBlocks.findIndex(b => b.id === block_id);
       if (blockIndex === -1) {
         return NextResponse.json({ error: 'Block not found' }, { status: 404 });
@@ -80,29 +104,37 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json(inMemoryBlocks[blockIndex]);
     }
 
-    // Handle block favorite toggle (is_favorite can be true, false, or undefined for toggle)
+    // Handle block favorite toggle
     const newFavoriteState = is_favorite === undefined
       ? !inMemoryBlocks.find(b => b.id === block_id)?.is_favorite
       : is_favorite;
 
     if (supabaseAdmin) {
-      await supabaseAdmin
-        .from('content_blocks')
-        .update({ is_favorite: newFavoriteState, updated_at: new Date().toISOString() })
-        .eq('id', block_id);
+      // Try content_blocks first
+      try {
+        await supabaseAdmin
+          .from('content_blocks')
+          .update({ is_favorite: newFavoriteState, updated_at: new Date().toISOString() })
+          .eq('id', block_id);
+        return NextResponse.json({ id: block_id, is_favorite: newFavoriteState });
+      } catch (e) {}
 
-      return NextResponse.json({ id: block_id, is_favorite: newFavoriteState });
+      // Try entries
+      try {
+        await supabaseAdmin
+          .from('entries')
+          .update({ is_favorite: newFavoriteState })
+          .eq('id', block_id);
+        return NextResponse.json({ id: block_id, is_favorite: newFavoriteState });
+      } catch (e) {}
     }
 
-    // Fallback to in-memory
     const blockIndex = inMemoryBlocks.findIndex(b => b.id === block_id);
     if (blockIndex === -1) {
       return NextResponse.json({ error: 'Block not found' }, { status: 404 });
     }
 
     inMemoryBlocks[blockIndex].is_favorite = newFavoriteState;
-    inMemoryBlocks[blockIndex].updated_at = new Date().toISOString();
-
     return NextResponse.json({ id: block_id, is_favorite: newFavoriteState });
   } catch (error) {
     console.error('Error updating block:', error);
@@ -121,11 +153,17 @@ export async function DELETE(request: NextRequest) {
 
     const supabaseAdmin = getSupabaseAdmin();
     if (supabaseAdmin) {
-      await supabaseAdmin
-        .from('content_blocks')
-        .delete()
-        .eq('id', id);
-      return new NextResponse(null, { status: 204 });
+      // Try content_blocks first
+      try {
+        await supabaseAdmin.from('content_blocks').delete().eq('id', id);
+        return new NextResponse(null, { status: 204 });
+      } catch (e) {}
+
+      // Try entries
+      try {
+        await supabaseAdmin.from('entries').delete().eq('id', id);
+        return new NextResponse(null, { status: 204 });
+      } catch (e) {}
     }
 
     const blockIndex = inMemoryBlocks.findIndex(b => b.id === id);
