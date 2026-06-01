@@ -10,7 +10,7 @@ import { BottomNav } from '@/components/BottomNav';
 import { Search, X, ChevronRight, Star, Loader2 } from 'lucide-react';
 import { CATEGORY_COLORS, DEFAULT_CATEGORIES } from '@/types';
 import { formatDistanceToNow, formatDate } from '@/lib/utils';
-import { getAuthToken } from '@/lib/supabase/client';
+import { getAuthToken, supabase } from '@/lib/supabase/client';
 import {
   Dialog,
   DialogContent,
@@ -18,6 +18,19 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
+
+const LOCAL_STORAGE_KEY = 'panpan_entries';
+
+interface LocalEntry {
+  id: string;
+  content: string;
+  summary: string;
+  categories: string[];
+  keywords: string[];
+  is_favorite: boolean;
+  created_at: string;
+  synced: boolean;
+}
 
 interface BlockWithEntry {
   id: string;
@@ -41,57 +54,106 @@ const TIME_FILTER_LABELS: Record<TimeFilter, string> = {
   month: '本月',
 };
 
+function loadFromLocalStorage(): LocalEntry[] {
+  try {
+    const data = localStorage.getItem(LOCAL_STORAGE_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveToLocalStorage(entries: LocalEntry[]) {
+  try {
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(entries));
+  } catch (error) {
+    console.error('Failed to save to localStorage:', error);
+  }
+}
+
 export function ListPageContent() {
   const searchParams = useSearchParams();
   const [searchQuery, setSearchQuery] = useState(searchParams.get('q') || '');
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(
-    searchParams.get('category') || null
-  );
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('all');
   const [blocks, setBlocks] = useState<BlockWithEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedBlock, setSelectedBlock] = useState<BlockWithEntry | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   const categories = DEFAULT_CATEGORIES;
 
-  // Fetch blocks when filters change
+  // Check login status
   useEffect(() => {
-    fetchBlocks();
-  }, [selectedCategory, timeFilter]);
+    const checkLogin = async () => {
+      const token = await getAuthToken();
+      setIsLoggedIn(!!token);
+    };
+    checkLogin();
+  }, []);
+
+  // Listen for auth changes
+  useEffect(() => {
+    if (!supabase) return;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      setIsLoggedIn(!!session?.user);
+      fetchBlocks();
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
   const fetchBlocks = async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-
-      // Only set category if one is explicitly selected
-      if (selectedCategory) {
-        params.set('category', selectedCategory);
-      }
-
-      params.set('blocks_only', 'true');
-
-      if (timeFilter !== 'all') {
-        params.set('time', timeFilter);
-      }
-
-      if (searchQuery.trim()) {
-        params.set('q', searchQuery.trim());
-      }
-
-      // Get auth token for logged-in users
       const token = await getAuthToken();
-      const headers: HeadersInit = {};
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
 
-      const response = await fetch(`/api/records?${params.toString()}`, { headers });
-      if (response.ok) {
-        const data = await response.json();
-        setBlocks(data);
+      if (token) {
+        // Logged in: fetch from cloud
+        const params = new URLSearchParams();
+        params.set('limit', '100');
+        if (selectedCategory) params.set('category', selectedCategory);
+        if (timeFilter !== 'all') params.set('time', timeFilter);
+        if (searchQuery) params.set('q', searchQuery);
+
+        const response = await fetch(`/api/records?${params.toString()}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setBlocks(data);
+        }
       } else {
-        throw new Error('Failed to fetch');
+        // Not logged in: load from localStorage
+        const localEntries = loadFromLocalStorage();
+        let filtered = localEntries;
+
+        if (selectedCategory) {
+          filtered = filtered.filter(e => e.categories?.includes(selectedCategory));
+        }
+
+        if (searchQuery) {
+          const q = searchQuery.toLowerCase();
+          filtered = filtered.filter(e =>
+            e.content.toLowerCase().includes(q) ||
+            e.keywords?.some((k: string) => k.toLowerCase().includes(q))
+          );
+        }
+
+        const blockEntries: BlockWithEntry[] = filtered.map(entry => ({
+          id: entry.id,
+          entry_id: entry.id,
+          category: entry.categories?.[0] || '其他',
+          content: entry.summary || entry.content?.slice(0, 50) || '',
+          summary: entry.summary,
+          keywords: entry.keywords || [],
+          favorite_keywords: [],
+          created_at: entry.created_at,
+          original_content: entry.content,
+          is_favorite: entry.is_favorite || false,
+        }));
+
+        setBlocks(blockEntries);
       }
     } catch (error) {
       console.error('Failed to fetch blocks:', error);
@@ -100,6 +162,11 @@ export function ListPageContent() {
       setLoading(false);
     }
   };
+
+  // Fetch when filters change
+  useEffect(() => {
+    fetchBlocks();
+  }, [selectedCategory, timeFilter, isLoggedIn]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -118,108 +185,22 @@ export function ListPageContent() {
     setTimeFilter(filter);
   };
 
-  // Block-level favorite toggle - only affects THIS specific block
-  const handleToggleBlockFavorite = async (blockId: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation();
-
-    // Optimistic UI update - immediately change the star color
-    setBlocks(prev =>
-      prev.map(b =>
-        b.id === blockId ? { ...b, is_favorite: !b.is_favorite } : b
-      )
-    );
-
-    // Update modal if open
-    if (selectedBlock?.id === blockId) {
-      setSelectedBlock(prev => prev ? { ...prev, is_favorite: !prev.is_favorite } : null);
-    }
-
-    try {
-      const token = await getAuthToken();
-      const headers: HeadersInit = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      const response = await fetch('/api/blocks', {
-        method: 'PATCH',
-        headers,
-        body: JSON.stringify({ block_id: blockId }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to toggle favorite');
-      }
-
-      const updatedBlock = await response.json();
-
-      // Update with server response
-      setBlocks(prev =>
-        prev.map(b =>
-          b.id === blockId ? { ...b, is_favorite: updatedBlock.is_favorite } : b
-        )
-      );
-
-      if (selectedBlock?.id === blockId) {
-        setSelectedBlock(prev => prev ? { ...prev, is_favorite: updatedBlock.is_favorite } : null);
-      }
-
-      toast.success(updatedBlock.is_favorite ? '已收藏' : '已取消收藏');
-    } catch (error) {
-      console.error('Failed to toggle block favorite:', error);
-      // Revert optimistic update on error
-      setBlocks(prev =>
-        prev.map(b =>
-          b.id === blockId ? { ...b, is_favorite: !b.is_favorite } : b
-        )
-      );
-      if (selectedBlock?.id === blockId) {
-        setSelectedBlock(prev => prev ? { ...prev, is_favorite: !prev.is_favorite } : null);
-      }
-      toast.error('操作失败');
-    }
-  };
-
   const clearFilters = () => {
     setSelectedCategory(null);
     setSearchQuery('');
     setTimeFilter('all');
   };
 
-  // Keyword-level favorite toggle - only affects THIS specific keyword
-  const handleToggleKeywordFavorite = async (blockId: string, keyword: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-
-    const block = blocks.find(b => b.id === blockId);
-    if (!block) return;
-
-    const isCurrentlyFavorite = block.favorite_keywords?.includes(keyword);
-    const newFavoriteState = !isCurrentlyFavorite;
+  const handleToggleBlockFavorite = async (blockId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
 
     // Optimistic UI update
-    setBlocks(prev =>
-      prev.map(b => {
-        if (b.id !== blockId) return b;
-        const favKeywords = b.favorite_keywords || [];
-        return {
-          ...b,
-          favorite_keywords: newFavoriteState
-            ? [...favKeywords, keyword]
-            : favKeywords.filter(k => k !== keyword),
-        };
-      })
-    );
+    const currentBlock = blocks.find(b => b.id === blockId);
+    const newFavoriteState = !currentBlock?.is_favorite;
 
-    // Update modal if open
+    setBlocks(prev => prev.map(b => b.id === blockId ? { ...b, is_favorite: newFavoriteState } : b));
     if (selectedBlock?.id === blockId) {
-      setSelectedBlock(prev => {
-        if (!prev) return null;
-        const favKeywords = prev.favorite_keywords || [];
-        return {
-          ...prev,
-          favorite_keywords: newFavoriteState
-            ? [...favKeywords, keyword]
-            : favKeywords.filter(k => k !== keyword),
-        };
-      });
+      setSelectedBlock(prev => prev ? { ...prev, is_favorite: newFavoriteState } : null);
     }
 
     try {
@@ -230,39 +211,46 @@ export function ListPageContent() {
       const response = await fetch('/api/blocks', {
         method: 'PATCH',
         headers,
-        body: JSON.stringify({ block_id: blockId, keyword, is_favorite: newFavoriteState }),
+        body: JSON.stringify({ block_id: blockId, is_favorite: newFavoriteState }),
       });
 
-      if (!response.ok) throw new Error('Failed to toggle keyword favorite');
+      if (response.ok) {
+        toast.success(newFavoriteState ? '已收藏' : '已取消收藏');
 
-      toast.success(newFavoriteState ? '关键词已收藏' : '已取消收藏');
+        // Update localStorage if not logged in
+        if (!token) {
+          const entries = loadFromLocalStorage();
+          const entry = entries.find(e => e.id === blockId);
+          if (entry) {
+            entry.is_favorite = newFavoriteState;
+            saveToLocalStorage(entries);
+          }
+        }
+      } else {
+        throw new Error('Failed');
+      }
     } catch (error) {
-      console.error('Failed to toggle keyword favorite:', error);
-      // Revert optimistic update
-      setBlocks(prev =>
-        prev.map(b => {
-          if (b.id !== blockId) return b;
-          const favKeywords = b.favorite_keywords || [];
-          return {
-            ...b,
-            favorite_keywords: isCurrentlyFavorite
-              ? [...favKeywords, keyword]
-              : favKeywords.filter(k => k !== keyword),
-          };
-        })
-      );
+      // Revert on error
+      setBlocks(prev => prev.map(b => b.id === blockId ? { ...b, is_favorite: !newFavoriteState } : b));
+      if (selectedBlock?.id === blockId) {
+        setSelectedBlock(prev => prev ? { ...prev, is_favorite: !newFavoriteState } : null);
+      }
       toast.error('操作失败');
     }
   };
 
+  const handleToggleKeywordFavorite = async (blockId: string, keyword: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    // Keyword favorite not supported in local mode yet
+    toast.info('请登录后使用关键词收藏');
+  };
+
   return (
     <div className="min-h-screen pb-20 bg-gray-50 dark:bg-gray-950">
-      {/* Header */}
       <header className="sticky top-0 z-30 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800">
         <div className="px-4 py-4">
           <h1 className="text-xl font-bold text-gray-800 dark:text-white">知识碎片</h1>
 
-          {/* Time Filter Tabs */}
           <div className="flex gap-1 mt-3 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
             {(Object.keys(TIME_FILTER_LABELS) as TimeFilter[]).map((filter) => (
               <button
@@ -279,32 +267,23 @@ export function ListPageContent() {
             ))}
           </div>
 
-          {/* Search Form */}
           <form onSubmit={handleSearch} className="mt-3">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <Input
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={selectedCategory ? `在「${selectedCategory}」中搜索...` : '搜索所有碎片...'}
+                placeholder="搜索..."
                 className="pl-9 pr-9 bg-gray-100 dark:bg-gray-800 border-0"
               />
               {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearchQuery('');
-                    fetchBlocks();
-                  }}
-                  className="absolute right-3 top-1/2 -translate-y-1/2"
-                >
+                <button type="button" onClick={() => { setSearchQuery(''); fetchBlocks(); }} className="absolute right-3 top-1/2 -translate-y-1/2">
                   <X className="w-4 h-4 text-gray-400" />
                 </button>
               )}
             </div>
           </form>
 
-          {/* Category Chips */}
           <ScrollArea className="mt-3 w-full">
             <div className="flex gap-2 pb-1">
               {categories.map((cat) => (
@@ -328,19 +307,12 @@ export function ListPageContent() {
             </div>
           </ScrollArea>
 
-          {/* Active Filter Indicator */}
           {selectedCategory && (
             <div className="mt-2 flex items-center justify-between">
               <span className="text-sm text-indigo-600 dark:text-indigo-400">
                 筛选：{selectedCategory}
-                {searchQuery && ` + 关键词"${searchQuery}"`}
               </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearFilters}
-                className="text-gray-500 h-7"
-              >
+              <Button variant="ghost" size="sm" onClick={clearFilters} className="text-gray-500 h-7">
                 清除
               </Button>
             </div>
@@ -348,7 +320,6 @@ export function ListPageContent() {
         </div>
       </header>
 
-      {/* Blocks List */}
       <main className="max-w-lg mx-auto px-4 py-4">
         {loading ? (
           <div className="flex items-center justify-center py-12">
@@ -364,15 +335,6 @@ export function ListPageContent() {
               <p className="text-sm text-gray-500 mt-2">
                 {selectedCategory ? '尝试其他分类或时间筛选' : '尝试不同的关键词或分类'}
               </p>
-              {selectedCategory && (
-                <Button
-                  variant="outline"
-                  className="mt-4"
-                  onClick={clearFilters}
-                >
-                  清除筛选
-                </Button>
-              )}
             </CardContent>
           </Card>
         ) : (
@@ -384,7 +346,6 @@ export function ListPageContent() {
                 className="p-4 bg-white dark:bg-gray-900 rounded-xl border border-gray-100 dark:border-gray-800 hover:shadow-md transition-shadow cursor-pointer"
               >
                 <div className="flex items-start gap-3">
-                  {/* Category Tag */}
                   <span
                     className="px-2 py-1 rounded-full text-xs font-medium flex-shrink-0"
                     style={{
@@ -394,58 +355,29 @@ export function ListPageContent() {
                   >
                     {block.category}
                   </span>
-
-                  {/* Content */}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-gray-700 dark:text-gray-300 line-clamp-2">
                       {block.content}
                     </p>
-
-                    {/* Keywords (max 3) */}
                     <div className="flex gap-1.5 mt-2 flex-wrap">
-                      {block.keywords && block.keywords.length > 0 && (
-                        <>
-                          {block.keywords.slice(0, 3).map((kw, idx) => {
-                            const isFav = block.favorite_keywords?.includes(kw);
-                            return (
-                              <button
-                                key={idx}
-                                onClick={(e) => handleToggleKeywordFavorite(block.id, kw, e)}
-                                className={`px-2 py-0.5 rounded text-xs transition-colors ${
-                                  isFav
-                                    ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
-                                    : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'
-                                }`}
-                              >
-                                #{kw} {isFav ? '★' : '☆'}
-                              </button>
-                            );
-                          })}
-                        </>
-                      )}
+                      {block.keywords?.slice(0, 3).map((kw, idx) => (
+                        <span key={idx} className="px-2 py-0.5 rounded text-xs bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
+                          #{kw}
+                        </span>
+                      ))}
                     </div>
-
                     <div className="flex items-center justify-between mt-2">
                       <span className="text-xs text-gray-400">
                         {formatDistanceToNow(block.created_at)}
                       </span>
                       <div className="flex items-center gap-2">
-                        {/* Star button - only toggles THIS block's favorite */}
                         <button
                           onClick={(e) => handleToggleBlockFavorite(block.id, e)}
                           className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded transition-colors"
                         >
-                          <Star
-                            className={`w-4 h-4 ${
-                              block.is_favorite
-                                ? 'text-amber-500 fill-amber-500'
-                                : 'text-gray-400'
-                            }`}
-                          />
+                          <Star className={`w-4 h-4 ${block.is_favorite ? 'text-amber-500 fill-amber-500' : 'text-gray-400'}`} />
                         </button>
-                        <span className="text-xs text-indigo-600 dark:text-indigo-400">
-                          展开
-                        </span>
+                        <span className="text-xs text-indigo-600 dark:text-indigo-400">展开</span>
                         <ChevronRight className="w-4 h-4 text-gray-400" />
                       </div>
                     </div>
@@ -457,12 +389,11 @@ export function ListPageContent() {
         )}
       </main>
 
-      {/* Block Detail Modal */}
       <Dialog open={!!selectedBlock} onOpenChange={() => setSelectedBlock(null)}>
         <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
                 <span
                   className="px-3 py-1 rounded-full text-sm font-medium"
                   style={{
@@ -477,71 +408,44 @@ export function ListPageContent() {
                 </DialogTitle>
               </div>
               {selectedBlock && (
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleToggleBlockFavorite(selectedBlock.id)}
-                    className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
-                  >
-                    <Star
-                      className={`w-5 h-5 ${
-                        selectedBlock.is_favorite
-                          ? 'text-amber-500 fill-amber-500'
-                          : 'text-gray-400'
-                      }`}
-                    />
-                  </button>
-                </div>
+                <button
+                  onClick={() => handleToggleBlockFavorite(selectedBlock.id)}
+                  className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors"
+                >
+                  <Star className={`w-5 h-5 ${selectedBlock.is_favorite ? 'text-amber-500 fill-amber-500' : 'text-gray-400'}`} />
+                </button>
               )}
             </div>
           </DialogHeader>
 
           {selectedBlock && (
             <div className="space-y-4">
-              {/* Summary */}
               {selectedBlock.summary && (
                 <div className="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-xl">
-                  <p className="text-xs text-amber-600 dark:text-amber-400 font-medium mb-2">
-                    一句话总结
-                  </p>
-                  <p className="text-amber-700 dark:text-amber-300 text-base">
-                    {selectedBlock.summary}
-                  </p>
+                  <p className="text-xs text-amber-600 dark:text-amber-400 font-medium mb-2">一句话总结</p>
+                  <p className="text-amber-700 dark:text-amber-300">{selectedBlock.summary}</p>
                 </div>
               )}
 
-              {/* Block Content (短句) */}
               <div className="p-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl">
-                <p className="text-xs text-indigo-600 dark:text-indigo-400 font-medium mb-2">
-                  知识碎片
-                </p>
-                <p className="text-indigo-700 dark:text-indigo-300 text-base">
-                  {selectedBlock.content}
-                </p>
+                <p className="text-xs text-indigo-600 dark:text-indigo-400 font-medium mb-2">知识碎片</p>
+                <p className="text-indigo-700 dark:text-indigo-300">{selectedBlock.content}</p>
               </div>
 
-              {/* Keywords */}
               {selectedBlock.keywords && selectedBlock.keywords.length > 0 && (
                 <div className="flex flex-wrap gap-2">
                   {selectedBlock.keywords.map((kw, idx) => (
-                    <span
-                      key={idx}
-                      className="px-3 py-1.5 bg-gray-100 dark:bg-gray-800 rounded-full text-sm text-gray-600 dark:text-gray-400"
-                    >
+                    <span key={idx} className="px-3 py-1.5 bg-gray-100 dark:bg-gray-800 rounded-full text-sm text-gray-600 dark:text-gray-400">
                       #{kw}
                     </span>
                   ))}
                 </div>
               )}
 
-              {/* Original Content */}
               {selectedBlock.original_content && (
                 <div className="p-4 bg-gray-50 dark:bg-gray-800 rounded-xl">
-                  <p className="text-xs text-gray-500 font-medium mb-2">
-                    原始全文
-                  </p>
-                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-                    {selectedBlock.original_content}
-                  </p>
+                  <p className="text-xs text-gray-500 font-medium mb-2">原始全文</p>
+                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{selectedBlock.original_content}</p>
                 </div>
               )}
             </div>

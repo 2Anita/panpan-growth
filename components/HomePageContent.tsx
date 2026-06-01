@@ -8,7 +8,56 @@ import { RecordCard } from '@/components/RecordCard';
 import { toast } from 'sonner';
 import { formatDate } from '@/lib/utils';
 import { DEFAULT_CATEGORIES, CATEGORY_COLORS } from '@/types';
-import { getAuthToken } from '@/lib/supabase/client';
+import { getAuthToken, supabase } from '@/lib/supabase/client';
+
+const LOCAL_STORAGE_KEY = 'panpan_entries';
+
+interface LocalEntry {
+  id: string;
+  content: string;
+  summary: string;
+  categories: string[];
+  keywords: string[];
+  is_favorite: boolean;
+  created_at: string;
+  synced: boolean;
+}
+
+function loadFromLocalStorage(): LocalEntry[] {
+  try {
+    const data = localStorage.getItem(LOCAL_STORAGE_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveToLocalStorage(entries: LocalEntry[]) {
+  try {
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(entries));
+  } catch (error) {
+    console.error('Failed to save to localStorage:', error);
+  }
+}
+
+function groupBlocksByEntry(blocks: any[]) {
+  const entryMap = new Map<string, any>();
+  blocks.forEach(block => {
+    if (!entryMap.has(block.entry_id)) {
+      entryMap.set(block.entry_id, {
+        id: block.entry_id,
+        content: block.original_content || '',
+        summary: block.content,
+        keywords: block.keywords,
+        categories: [block.category],
+        created_at: block.created_at,
+        blocks: [],
+      });
+    }
+    entryMap.get(block.entry_id).blocks.push(block);
+  });
+  return Array.from(entryMap.values());
+}
 
 export function HomePageContent() {
   const [records, setRecords] = useState<any[]>([]);
@@ -16,52 +65,86 @@ export function HomePageContent() {
   const [pendingText, setPendingText] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   const today = new Date();
   const greeting = getGreeting();
 
   useEffect(() => {
-    fetchRecords();
+    const init = async () => {
+      const token = await getAuthToken();
+      setIsLoggedIn(!!token);
+
+      if (token) {
+        await fetchCloudData();
+      } else {
+        await fetchLocalData();
+      }
+      setLoading(false);
+    };
+    init();
   }, []);
 
-  const fetchRecords = async () => {
-    setLoading(true);
+  useEffect(() => {
+    if (!supabase) return;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      const isNowLoggedIn = !!session?.user;
+      setIsLoggedIn(isNowLoggedIn);
+
+      if (isNowLoggedIn) {
+        await fetchCloudData();
+      } else {
+        await fetchLocalData();
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const fetchCloudData = async () => {
     try {
       const token = await getAuthToken();
-      const headers: HeadersInit = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (!token) return;
 
-      const response = await fetch('/api/records?blocks_only=true&limit=20', { headers });
+      const response = await fetch('/api/records?limit=100', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
       if (response.ok) {
         const data = await response.json();
-        // Group blocks by entry_id to create records
         const grouped = groupBlocksByEntry(data);
         setRecords(grouped);
+
+        const localEntries: LocalEntry[] = grouped.map(r => ({
+          id: r.id,
+          content: r.content,
+          summary: r.summary,
+          categories: r.categories,
+          keywords: r.keywords,
+          is_favorite: r.is_favorite || false,
+          created_at: r.created_at,
+          synced: true,
+        }));
+        saveToLocalStorage(localEntries);
       }
     } catch (error) {
-      console.error('Failed to fetch records:', error);
-    } finally {
-      setLoading(false);
+      console.error('Failed to fetch cloud data:', error);
     }
   };
 
-  const groupBlocksByEntry = (blocks: any[]) => {
-    const entryMap = new Map<string, any>();
-    blocks.forEach(block => {
-      if (!entryMap.has(block.entry_id)) {
-        entryMap.set(block.entry_id, {
-          id: block.entry_id,
-          content: block.original_content || '',
-          summary: block.content,
-          keywords: block.keywords,
-          categories: [block.category],
-          created_at: block.created_at,
-          blocks: [],
-        });
-      }
-      entryMap.get(block.entry_id).blocks.push(block);
-    });
-    return Array.from(entryMap.values());
+  const fetchLocalData = async () => {
+    const localEntries = loadFromLocalStorage();
+    const localRecords = localEntries.map(entry => ({
+      id: entry.id,
+      content: entry.content,
+      summary: entry.summary,
+      keywords: entry.keywords,
+      categories: entry.categories,
+      created_at: entry.created_at,
+      blocks: [],
+    }));
+    setRecords(localRecords.sort((a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    ));
   };
 
   const handleSubmit = async (content: string) => {
@@ -86,10 +169,40 @@ export function HomePageContent() {
         }),
       });
 
-      if (!response.ok) throw new Error('Failed to save record');
+      if (!response.ok) throw new Error('Failed to save');
 
       const newRecord = await response.json();
-      setRecords(prev => [newRecord, ...prev]);
+
+      if (token) {
+        const grouped = [{ ...newRecord, blocks: newRecord.blocks || [] }];
+        setRecords(prev => [grouped[0], ...prev]);
+      } else {
+        const localEntries = loadFromLocalStorage();
+        const newEntry: LocalEntry = {
+          id: newRecord.id,
+          content: newRecord.content,
+          summary: newRecord.summary,
+          categories: newRecord.categories,
+          keywords: newRecord.keywords,
+          is_favorite: false,
+          created_at: newRecord.created_at,
+          synced: false,
+        };
+        localEntries.unshift(newEntry);
+        saveToLocalStorage(localEntries);
+
+        const localRecord = {
+          id: newRecord.id,
+          content: newRecord.content,
+          summary: newRecord.summary,
+          keywords: newRecord.keywords,
+          categories: newRecord.categories,
+          created_at: newRecord.created_at,
+          blocks: [],
+        };
+        setRecords(prev => [localRecord, ...prev]);
+      }
+
       toast.success('复盘已保存');
       setSelectedCategory(null);
       setPendingText('');
@@ -100,9 +213,7 @@ export function HomePageContent() {
     }
   };
 
-  const handleVoiceClick = () => {
-    // Voice is handled inline in InputCard
-  };
+  const handleVoiceClick = () => {};
 
   const handleCategorySelect = (categoryName: string) => {
     if (selectedCategory === categoryName) {
@@ -132,7 +243,6 @@ export function HomePageContent() {
       </header>
 
       <main className="max-w-lg mx-auto px-4 py-6 space-y-6">
-        {/* Quick Category Buttons */}
         <div className="space-y-2">
           <p className="text-xs text-gray-500">
             {selectedCategory ? (
